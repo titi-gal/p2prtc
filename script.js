@@ -1,21 +1,26 @@
 class BaseGui {
-    constructor({parent, container} = {}) {
-        this.parent = parent || document.querySelector('body')
-        this.container = container || document.createElement('div')
-        if (!container) {
-            this.parent.append(this.container)
-        } else {
-            this.parent = this.container.parentElement
-        }
+    constructor({label='', parent=document.querySelector('body')} = {}) {
+        this.parent = parent
+        this.OuterContainer = document.createElement('div')
+        this.innerContainer = document.createElement('div')
+        this.label = document.createElement('label')
+        this.label.innerText = label
+        this.OuterContainer.append(this.label)
+        this.OuterContainer.append(this.innerContainer)
+        this.parent.append(this.OuterContainer)
+
+        this.label.addEventListener('click', () => {
+            this.innerContainer.toggleAttribute('hidden')
+        })
     }
 
     kill() {
-        this.container.remove()
+        this.OuterContainer.remove()
     }
 
     appendElement(name) {
         const element = document.createElement(name)
-        this.container.append(element)
+        this.innerContainer.append(element)
         return element
     }
 
@@ -34,7 +39,6 @@ class StreamsGui extends BaseGui {
             videoElement.srcObject = stream
             videoElement.controls = true
             videoElement.play()
-            this.container.appendChild(videoElement)
             return videoElement
         } else {
             return null
@@ -51,7 +55,7 @@ class StreamsGui extends BaseGui {
     }
 
     get(stream) {
-        return this.container.querySelector(`[id="${stream.id}"]`)
+        return this.innerContainer.querySelector(`[id="${stream.id}"]`)
     }
 }
 
@@ -61,21 +65,28 @@ class LocalPeer {
         this.config = config
         this.connections = {}
         this.sendStreams = {}
-        this.streamsGui = STREAMS_GUI
+
         this.createGui()
     }
 
     newConnection() {
-        new Connection(this.config)
+        if (this.connectingConnection) {
+            this.connectingConnection.reset()
+        }
+        this.connectingConnection = new Connection(this.config)
     }
 
     addConnection(connectionInstance) {
-        // connection data channel calls this.addConnection() once it received remote peer id, just after connected
+        // once connected, the connection data channel receives its id from remote peer and calls this
+
+        // TODO maybe this should bo receive a connectionInstance and intead should use the connectingConnection aways?
         
         // if connection id in not peer id and not other connectios ids
-        if (connectionInstance.id !== this.id && !this.connections[connectionInstance.id]) {
+        if (connectionInstance.remotePeerId !== this.id && !this.connections[connectionInstance.remotePeerId]) {
+            // free the connecting connection reference
+            this.connectingConnection = null
             // store this connection in connections
-            this.connections[connectionInstance.id] = connectionInstance
+            this.connections[connectionInstance.remotePeerId] = connectionInstance
             // all all current streams to connection
             Object.values(this.sendStreams).forEach(stream => {
                 connectionInstance.addStream(stream)
@@ -152,12 +163,19 @@ class LocalPeer {
     }
 
     createGui() {
-        this.gui = new BaseGui({container: LOCAL_PEER_CONTAINER})
+
+        this.gui = new BaseGui({label: `Local Peer Id: ${this.id}`, parent: LOCAL_PEER_PARENT})
+        this.streamsGui = new StreamsGui({parent: STREAMS_GUI.innerContainer,label: `Streams Local Peer`})
+
+        const configGui = new BaseGui({parent: this.gui.innerContainer, label: 'Connection Configurarion:'})
+        const configTextarea = configGui.appendElement('textarea')
+        configTextarea.value = '{}'
 
         const newConnectionButton = this.gui.appendButton('New Connection')
         const addUserStreamButton = this.gui.appendButton('Add User Stream')
         const addDisplayStreamButton = this.gui.appendButton('Add Display Stream')
         newConnectionButton.addEventListener('click', () => {
+            this.config = JSON.parse(configTextarea.value)
             this.newConnection()
         })
         addUserStreamButton.addEventListener('click', () => {
@@ -172,7 +190,7 @@ class LocalPeer {
 class Connection {
     constructor(config) {
         this.config = config
-        this.id = null // remote peer sends its id once connected
+        this.remotePeerId = null // remote peer sends its id once connected
         this.reset()
         this.open()
     }
@@ -181,8 +199,8 @@ class Connection {
         // rtcpc exists and its not closed
         if (this.rtcpc && this.rtcpc.connectionState !== 'closed') {
             // stop sending all streams
-            this.connection.getSenders().forEach(sender => {
-                this.connection.removeTrack(sender)
+            this.rtcpc.getSenders().forEach(sender => {
+                this.rtcpc.removeTrack(sender)
             })
             // closes it
             this.rtcpc.close()
@@ -196,12 +214,12 @@ class Connection {
         // if gui exists kills it
         if (this.gui) {
             this.gui.kill()
+            this.streamsGui.kill()
         }
 
         // set every property to initial state
         this.rtcpc = null // rtcpc means RTCPeerConnection
-        this.refuseOnOfferConflict = null
-        this.streamsGui = STREAMS_GUI
+        this.refuseOnOfferConflict = null //TODO when where to set this?
         this.dataChannels = {}
         this.sendStreams = {}
         this.receiveStreams = {}
@@ -236,7 +254,7 @@ class Connection {
         }
     
         removeStream(stream) {
-            // removes each track of the stream from the connection, will stop sending it to remote peer
+            // removes each track of the stream from the connection, will stop sending to remote peer
             if(this.sendStreams[stream.id]) {
                 const senders = this.rtcpc.getSenders()
                 stream.getTracks().forEach( track => {
@@ -279,7 +297,7 @@ class Connection {
         return await this.getDescriptionOnIceComplete()
     }
 
-    async setRemoteOfferSetLocalAndSend(description) {
+    async setRemoteOfferSetLocalAnswerAndSend(description) {
         if(description.type === 'offer') {
             await this.rtcpc.setRemoteDescription(description)
             await this.rtcpc.setLocalDescription()
@@ -295,6 +313,22 @@ class Connection {
             await this.rtcpc.setRemoteDescription(description)
         } else {
             throw new Error(`description.type is ${description.type}, expected answer`)
+        }
+    }
+
+    async receiveDescription(description) {
+        if (// if have local offer and
+            this.rtcpc.signalingState === 'have-local-offer' &&
+            // received offer and
+            description.type === 'offer' &&
+            // should refuse on offer conflict
+            this.refuseOnOfferConflict) {
+                // do nothing, answer will come from remote peer
+                return  null
+        } else if (description.type === 'offer') {
+            return await this.setRemoteOfferSetLocalAnswerAndSend(description)
+        } else if (description.type === 'answer') {
+            await this.setRemoteAnswer(description)
         }
     }
 
@@ -399,21 +433,28 @@ class Connection {
         })
     }
 
+    updateGuiLabel() {
+        if (this.gui) {
+            this.gui.label.innerText = `Connection Remote Peer Id: ${this.remotePeerId}`
+            this.streamsGui.label.innerText = `Streams Remote Peer Id: ${this.remotePeerId}`
+        }
+    }
+
     createGui() {
         this.gui = new BaseGui({parent: CONNECTIONS_PARENT})
+        this.streamsGui = new StreamsGui({parent: STREAMS_GUI.innerContainer})
+        this.updateGuiLabel()
 
         const negotiationGui = async () => {
             // negotiation elements
-            const negotiationLabel = this.gui.appendElement('label')
-            const negotiationTextarea = this.gui.appendElement('textarea')
+            const negotiationGui = new BaseGui({parent: this.gui.innerContainer})
+            const negotiationTextarea = negotiationGui.appendElement('textarea')
             negotiationTextarea.readOnly = true
-            negotiationLabel.innerText = 'Connection Negotiation:'
+            negotiationGui.label.innerText = 'Connection Description: '
 
             // get a and show new offer
-            const localDescripton = await this.setLocalOfferAndSend()
-            const descriptionString = JSON.stringify(localDescripton)
-            negotiationLabel.innerText = "Send this OR paste received:"
-            negotiationTextarea.value = descriptionString
+            let localDescription = await this.setLocalOfferAndSend()
+            negotiationTextarea.value = JSON.stringify(localDescription)
 
             // deal with subsequent pasted offers or answers
             negotiationTextarea.addEventListener('paste', async (event) => {
@@ -421,24 +462,22 @@ class Connection {
                 // get description
                 let pastedDescription
                 try {
-                    pastedDescription = JSON.parse(event.clipboardData.getData('text'))
+                    pastedDescription = new RTCSessionDescription(JSON.parse(event.clipboardData.getData('text')))
                 } catch (error) {
                     negotiationTextarea.value = `error parsing JSON: ${error.toString()}`
+                    return
                 }
 
-                // if description is offer set it as remote and, set a new local and shows it
-                if (pastedDescription.type === 'offer') {
-                    const localDescripton = await this.setRemoteOfferSetLocalAndSend(pastedDescription)
-                    const descriptionString = JSON.stringify(localDescripton)
-                    negotiationLabel.innerText = 'Now send this AND paste received:'
-                    negotiationTextarea.value = descriptionString
-                    
-                // if description is answer set it as remote
-                } else if (pastedDescription.type === 'answer') {
-                    await this.setRemoteAnswer(pastedDescription)
-                } else {
-                    negotiationTextarea.value = 'not a offer or answer description'
+                // receive description and get response description
+                try {
+                    localDescription = await this.receiveDescription(pastedDescription)
+                } catch (error) {
+                    negotiationTextarea.value = `error receiving description: ${error.toString()}`
+                    return
                 }
+
+                // show respose description
+                negotiationTextarea.value = JSON.stringify(localDescription)
             })
 
             negotiationTextarea.addEventListener('click', () => {
@@ -447,10 +486,9 @@ class Connection {
         }
 
         const statesGui = () => {
-            const statesLabel = this.gui.appendElement('label')
-            const statesTextarea = this.gui.appendElement('textarea')
-            statesTextarea.hidden = true
-            statesLabel.innerText = 'Connection States:'
+            const statesGui = new BaseGui({parent: this.gui.innerContainer})
+            const statesTextarea = statesGui.appendElement('textarea')
+            statesGui.label.innerText = 'Connection States:'
 
             const updateStates = () => {
                 statesTextarea.value =
@@ -459,10 +497,6 @@ class Connection {
                 `Ice Gathering: ${this.rtcpc.iceGatheringState}\n` +
                 `Ice Connection: ${this.rtcpc.iceConnectionState}`
             }
-
-            statesLabel.addEventListener('click', () => {
-                statesTextarea.toggleAttribute('hidden')
-            })
             
             updateStates()
             this.rtcpc.addEventListener('connectionstatechange', updateStates)
@@ -474,10 +508,10 @@ class Connection {
         }
 
         const statsGui = () => {
-            const statsLabel = this.gui.appendElement('label')
-            const statsTextarea = this.gui.appendElement('textarea')
-            statsTextarea.hidden = true
-            statsLabel.innerText = 'Connection Stats:'
+            const statsGui = new BaseGui({parent: this.gui.innerContainer})
+            const statsTextarea = statsGui.appendElement('textarea')
+            statsGui.label.innerText = 'Connection Stats:'
+            statsGui.innerContainer.hidden = true
 
             let startStatsintervalId
 
@@ -492,9 +526,9 @@ class Connection {
                 
                         // other report values, ignoring the ones sorted on top
                         Object.keys(report).forEach((statName) => {
-                        if (statName !== "id" &&
-                            statName !== "timestamp" &&
-                            statName !== "type") {
+                        if (statName !== 'id' &&
+                            statName !== 'timestamp' &&
+                            statName !== 'type') {
                             statsOutput += `${statName}: ${report[statName]}\n`
                         }
                         })
@@ -515,13 +549,11 @@ class Connection {
                 clearInterval(startStatsintervalId)
             }
 
-            statsLabel.addEventListener('click', (event) => {
-                if (statsTextarea.hidden) {
-                    startStats()
-                    statsTextarea.hidden = false
-                } else {
+            statsGui.label.addEventListener('click', (event) => {
+                if (statsGui.innerContainer.hidden) {
                     stopStats()
-                    statsTextarea.hidden = true
+                } else {
+                    startStats()
                 }
             })
         }
@@ -537,34 +569,26 @@ function idChannelOnOpen(event, connectionInstance) {
 }
 
 function idChannelOnMessage(event, connectionInstance) {
-    connectionInstance.id = JSON.parse(event.data)
+    connectionInstance.remotePeerId = JSON.parse(event.data)
+    connectionInstance.updateGuiLabel()
     LOCAL_PEER.addConnection(connectionInstance)
 }
 
 async function sdpChannelOnMessage(event, connectionInstance) {
     const description = new RTCSessionDescription(JSON.parse(event.data))
-    if (// if have local offer and
-        connectionInstance.rtcpc.signalingState === 'have-local-offer' &&
-        // received offer and
-        description.type === 'offer' &&
-        // should refuse on offer conflict
-        connectionInstance.refuseOnOfferConflict) {
-            // do nothing, answer will come from remote peer
-            return  null
-
-    } else if (description.type === 'offer') {
-        await connectionInstance.setRemoteOfferSetLocalAndSend(description)
-    } else if (description.type === 'answer') {
-        await connectionInstance.setRemoteAnswer(description)
-    }
+    connectionInstance.receiveDescription(description)
 }
 
-const MAIN_GUI = new BaseGui()
-const LOCAL_PEER_CONTAINER = MAIN_GUI.appendElement('div')
-const STREAMS_CONTAINER  = MAIN_GUI.appendElement('div')
+const MAIN_GUI = new BaseGui({label: 'Main Gui'})
+const LOCAL_PEER_PARENT = MAIN_GUI.appendElement('div')
+const STREAMS_GUI = new BaseGui({parent: MAIN_GUI.innerContainer, label: 'Streams'})
+const CONNECTIONS_PARENT = MAIN_GUI.appendElement('div')
+/*
+const STREAMS_PARENT  = MAIN_GUI.appendElement('div')
 const DATA_CHANNELS_PARENT = MAIN_GUI.appendElement('div')
 const CONNECTIONS_PARENT = MAIN_GUI.appendElement('div')
-const STREAMS_GUI = new StreamsGui({container: STREAMS_CONTAINER})
+const STREAMS_GUI = new StreamsGui({parent: STREAMS_PARENT, label: 'Send Streams'})
+*/
 
 const LOCAL_PEER = new LocalPeer()
 
