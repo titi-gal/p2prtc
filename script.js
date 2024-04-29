@@ -579,7 +579,7 @@ async function sdpChannelOnMessage(event, connectionInstance) {
     connectionInstance.receiveOfferOrAnswer(description)
 }
 
-const MAIN_GUI = new BaseGui({label: 'Main Gui'})
+const MAIN_GUI = new BaseGui()
 const LOCAL_PEER_PARENT = MAIN_GUI.appendElement('div')
 const STREAMS_GUI = new BaseGui({parent: MAIN_GUI.innerContainer, label: 'Streams'})
 const CONNECTIONS_PARENT = MAIN_GUI.appendElement('div')
