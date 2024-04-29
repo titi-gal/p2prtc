@@ -1,11 +1,12 @@
 class BaseGui {
     /*
-    //parent, where the instance should be appended
-    <div> //outerContainer
-        <label></label> //label, on click toggle innerContainer
-        <div> //innerContainer, where elements of the instance are appended
+    <anyelement> //parent, where the instance should be appended
+        <div> //outerContainer
+            <label></label> //label, on click toggle innerContainer
+            <div> //innerContainer, where elements of the instance are appended
+            </div>
         </div>
-    </div>
+    </anyelement>
     */
     constructor({label='', parent=document.querySelector('body')} = {}) {
         this.parent = parent
@@ -316,13 +317,13 @@ class Connection {
                 // refusing peer does nothing and wait for an answer
                 return  null
         
-        // both peers (or accepting peer on offer conflict) processes an offer and send an answer
+        // both peers (or accepting peer on offer conflict) processes an offer and sends an answer
         } else if (description.type === 'offer') {
             await this.rtcpc.setRemoteDescription(description)
             await this.rtcpc.setLocalDescription()
             return this.sendAndReturnLocalDescription()
 
-        // both peers appects answers
+        // both peers accepts answers in any case
         } else if (description.type === 'answer') {
             await this.rtcpc.setRemoteDescription(description)
         }
@@ -570,7 +571,7 @@ function idChannelOnOpen(event, connectionInstance) {
 function idChannelOnMessage(event, connectionInstance) {
     connectionInstance.remotePeerId = JSON.parse(event.data)
     connectionInstance.updateGuiLabel()
-    LOCAL_PEER.addConnection(connectionInstance)
+    LOCAL_PEER.addConnection()
 }
 
 async function sdpChannelOnMessage(event, connectionInstance) {
