@@ -78,27 +78,29 @@ class LocalPeer {
     }
 
     newConnection() {
+        // makes a new connecting connection
+        // TOMAYBEDO for now onnection is made over an old one, if exists
         if (this.connectingConnection) {
             this.connectingConnection.reset()
         }
         this.connectingConnection = new Connection(this.config)
     }
 
-    addConnection(connectionInstance) {
-        // once connected, the connection data channel receives its id from remote peer and calls this
-
-        // TODO maybe this should bo receive a connectionInstance and intead should use the connectingConnection aways?
+    addConnection() {
+        // once connected, the connecting connection data channel receives its id from remote peer and calls this function
+        // TOMAYBEDO for now only one connecting connection per time is supported
+        // TOMAYBEDO for this and only this connection should be added
         
         // if connection id in not peer id and not other connectios ids
-        if (connectionInstance.remotePeerId !== this.id && !this.connections[connectionInstance.remotePeerId]) {
-            // free the connecting connection reference
-            this.connectingConnection = null
+        if (this.connectingConnection.remotePeerId !== this.id && !this.connections[this.connectingConnection.remotePeerId]) {
             // store this connection in connections
-            this.connections[connectionInstance.remotePeerId] = connectionInstance
+            this.connections[this.connectingConnection.remotePeerId] = this.connectingConnection
             // all all current streams to connection
             Object.values(this.sendStreams).forEach(stream => {
-                connectionInstance.addStream(stream)
+                this.connectingConnection.addStream(stream)
             })
+            // free the connecting connection reference
+            this.connectingConnection = null
         } else {
             throw new Error('id conflict')
         }
@@ -227,7 +229,7 @@ class Connection {
 
         // set every property to initial state
         this.rtcpc = null // rtcpc means RTCPeerConnection
-        this.refuseOnOfferConflict = null //TODO when where to set this?
+        this.refuseIfOfferConflict = null // TODO when where to set this?
         this.dataChannels = {}
         this.sendStreams = {}
         this.receiveStreams = {}
@@ -249,107 +251,96 @@ class Connection {
         this.createGui()
     }
 
-        // streams
+    // streams
 
-        addStream(stream) {
-            // add each track of the stream to the connection, will start sending to remote peer
-            if(!this.sendStreams[stream.id]) {
-                stream.getTracks().forEach(track => {
-                    this.rtcpc.addTrack(track, stream)
-                })
-                this.sendStreams[stream.id] = stream
-            }
-        }
-    
-        removeStream(stream) {
-            // removes each track of the stream from the connection, will stop sending to remote peer
-            if(this.sendStreams[stream.id]) {
-                const senders = this.rtcpc.getSenders()
-                stream.getTracks().forEach( track => {
-                    const sender = senders.find(sender => sender.track === track)
-                    this.rtcpc.removeTrack(sender)
-                })
-                delete this.sendStreams[stream.id]
-            }
-        }
-
-        streamReceiveListener() {
-            // receive each track and the stream from remote peer that called addStream()
-            this.rtcpc.addEventListener('track', event => {
-                if (event.streams.length === 1) {
-                    const stream = event.streams[0]
-                    // if stream was not received before
-                    if (!this.receiveStreams[stream.id]) {
-                        // adds it and creates a gui element for it
-                        this.receiveStreams[stream.id] = stream
-                        this.streamsGui.add(stream)
-                        // add event to remove stream when remote peer calls removeStream()
-                        stream.addEventListener('removetrack', event => {
-                            // remove stream and its gui element
-                            delete this.receiveStreams[event.target.id]
-                            this.streamsGui.remove(event.target)
-                        })
-                    }
-                } else {
-                    // the way addStrem is coded this event should aways receive a stream
-                    throw new Error(`event.streams.length is ${event.streams.length}, expected 1`)
-                }
+    addStream(stream) {
+        // add each track of the stream to the connection, will start sending to remote peer
+        if(!this.sendStreams[stream.id]) {
+            stream.getTracks().forEach(track => {
+                this.rtcpc.addTrack(track, stream)
             })
+            this.sendStreams[stream.id] = stream
         }
+    }
+
+    removeStream(stream) {
+        // removes each track of the stream from the connection, will stop sending to remote peer
+        if(this.sendStreams[stream.id]) {
+            const senders = this.rtcpc.getSenders()
+            stream.getTracks().forEach( track => {
+                const sender = senders.find(sender => sender.track === track)
+                this.rtcpc.removeTrack(sender)
+            })
+            delete this.sendStreams[stream.id]
+        }
+    }
+
+    streamReceiveListener() {
+        // receive each track and the stream from remote peer that called addStream()
+        this.rtcpc.addEventListener('track', event => {
+            if (event.streams.length === 1) {
+                const stream = event.streams[0]
+                // if stream was not received before
+                if (!this.receiveStreams[stream.id]) {
+                    // adds it and creates a gui element for it
+                    this.receiveStreams[stream.id] = stream
+                    this.streamsGui.add(stream)
+                    // add event to remove stream when remote peer calls removeStream()
+                    stream.addEventListener('removetrack', event => {
+                        // remove stream and its gui element
+                        delete this.receiveStreams[event.target.id]
+                        this.streamsGui.remove(event.target)
+                    })
+                }
+            } else {
+                // the way addStrem is coded this event should aways receive a stream
+                throw new Error(`event.streams.length is ${event.streams.length}, expected 1`)
+            }
+        })
+    }
     
     // negotitation functions
 
-    async setLocalOfferAndSend() {
+    async sendOffer() {
         await this.rtcpc.setLocalDescription()
-        this.sendMessage('sdp', this.rtcpc.localDescription)
-        return await this.getDescriptionOnIceComplete()
+        return this.sendAndReturnLocalDescription()
     }
 
-    async setRemoteOfferSetLocalAnswerAndSend(description) {
-        if(description.type === 'offer') {
+    async receiveOfferOrAnswer(description) {
+        if (// receives an offer and signalingState is have-local-offer in an offer conflict
+            description.type === 'offer' &&
+            this.rtcpc.signalingState === 'have-local-offer' &&
+            // one peer should aways refuse
+            // other peer should aways accept
+            this.refuseIfOfferConflict) {
+                // refusing peer does nothing and wait for an answer
+                return  null
+        
+        // both peers (or accepting peer on offer conflict) processes an offer and send an answer
+        } else if (description.type === 'offer') {
             await this.rtcpc.setRemoteDescription(description)
             await this.rtcpc.setLocalDescription()
-            this.sendMessage('sdp', this.rtcpc.localDescription)
-            return await this.getDescriptionOnIceComplete()
-        } else {
-            throw new Error(`description.type is ${description.type}, expected offer`)
-        }
-    }
+            return this.sendAndReturnLocalDescription()
 
-    async setRemoteAnswer(description) {
-        if(description.type === 'answer') {
-            await this.rtcpc.setRemoteDescription(description)
-        } else {
-            throw new Error(`description.type is ${description.type}, expected answer`)
-        }
-    }
-
-    async receiveDescription(description) {
-        if (// if have local offer and
-            this.rtcpc.signalingState === 'have-local-offer' &&
-            // received offer and
-            description.type === 'offer' &&
-            // should refuse on offer conflict
-            this.refuseOnOfferConflict) {
-                // do nothing, answer will come from remote peer
-                return  null
-        } else if (description.type === 'offer') {
-            return await this.setRemoteOfferSetLocalAnswerAndSend(description)
+        // both peers appects answers
         } else if (description.type === 'answer') {
-            await this.setRemoteAnswer(description)
+            await this.rtcpc.setRemoteDescription(description)
         }
     }
 
-    async getDescriptionOnIceComplete() {
-        // if ice is complete returns local description
+    async sendAndReturnLocalDescription() {
+        // send description to remote peer, (will receive if datachannel is open)
+        this.sendMessage('sdp', this.rtcpc.localDescription)
+
+        // return description on ice complete
+        // if ice is already complete returns local description
         if (this.rtcpc.iceGatheringState === 'complete') {
             return this.rtcpc.localDescription
         
-        // else create a new promise to wait complete
+        // else create a new promise to wait ice complete before returning
         } else {
             return await new Promise((resolve) => {
-
-                // add this event listener to the rtcpc to check ice state
+                // add this event listener to rtcpc to check ice state
                 // the event removes itself once is done
                 const onIceGatheringStateChange = () => {
                     if (this.rtcpc.iceGatheringState === 'complete') {
@@ -373,7 +364,7 @@ class Connection {
 
         this.rtcpc.addEventListener('negotiationneeded', event => {
             // create a new local description to start negotiation
-            this.setLocalOfferAndSend()
+            this.sendOffer()
         })
     }
 
@@ -461,7 +452,7 @@ class Connection {
             negotiationGui.label.innerText = 'Connection Description: '
 
             // get a and show new offer
-            let localDescription = await this.setLocalOfferAndSend()
+            let localDescription = await this.sendOffer()
             negotiationTextarea.value = JSON.stringify(localDescription)
 
             // deal with subsequent pasted offers or answers
@@ -478,7 +469,7 @@ class Connection {
 
                 // receive description and get response description
                 try {
-                    localDescription = await this.receiveDescription(pastedDescription)
+                    localDescription = await this.receiveOfferOrAnswer(pastedDescription)
                 } catch (error) {
                     negotiationTextarea.value = `error receiving description: ${error.toString()}`
                     return
@@ -584,19 +575,13 @@ function idChannelOnMessage(event, connectionInstance) {
 
 async function sdpChannelOnMessage(event, connectionInstance) {
     const description = new RTCSessionDescription(JSON.parse(event.data))
-    connectionInstance.receiveDescription(description)
+    connectionInstance.receiveOfferOrAnswer(description)
 }
 
 const MAIN_GUI = new BaseGui({label: 'Main Gui'})
 const LOCAL_PEER_PARENT = MAIN_GUI.appendElement('div')
 const STREAMS_GUI = new BaseGui({parent: MAIN_GUI.innerContainer, label: 'Streams'})
 const CONNECTIONS_PARENT = MAIN_GUI.appendElement('div')
-/*
-const STREAMS_PARENT  = MAIN_GUI.appendElement('div')
-const DATA_CHANNELS_PARENT = MAIN_GUI.appendElement('div')
-const CONNECTIONS_PARENT = MAIN_GUI.appendElement('div')
-const STREAMS_GUI = new StreamsGui({parent: STREAMS_PARENT, label: 'Send Streams'})
-*/
 
 const LOCAL_PEER = new LocalPeer()
 
