@@ -1,4 +1,12 @@
 class BaseGui {
+    /*
+    //parent, where the instance should be appended
+    <div> //outerContainer
+        <label></label> //label, on click toggle innerContainer
+        <div> //innerContainer, where elements of the instance are appended
+        </div>
+    </div>
+    */
     constructor({label='', parent=document.querySelector('body')} = {}) {
         this.parent = parent
         this.OuterContainer = document.createElement('div')
