@@ -72,36 +72,41 @@ class LocalPeer {
     constructor(config) {
         this.id = generateUUID()
         this.config = config
+        this.newConnections = {}
         this.connections = {}
         this.sendStreams = {}
 
         this.createGui()
     }
 
-    newConnection() {
-        // makes a new connecting connection
-        // TOMAYBEDO for now onnection is made over an old one, if exists
-        if (this.connectingConnection) {
-            this.connectingConnection.reset()
+    newConnection(id) {
+        // makes a new connection instance
+        const connection = new Connection(this.config)
+        if (id) {
+            connection.id = id
         }
-        this.connectingConnection = new Connection(this.config)
+        this.newConnections[connection.id] = connection
+        return connection
     }
 
-    addConnection() {
-        // once connected, the connecting connection data channel receives its id from remote peer and calls this function
-        // TOMAYBEDO for now only one connecting connection per time is supported
-        // TOMAYBEDO for this and only this connection should be added
-        
-        // if connection id in not peer id and not other connectios ids
-        if (this.connectingConnection.remotePeerId !== this.id && !this.connections[this.connectingConnection.remotePeerId]) {
-            // store this connection in connections
-            this.connections[this.connectingConnection.remotePeerId] = this.connectingConnection
+    connectionFirstConnected(tempraryId, remotePeerId) {
+        // once connected, the new connection receives the remote peer id 
+        // with the id datachannel that calls this function
+
+        // if remotePeerId is not local peer id and is not a connection of local peer
+        if (remotePeerId !== this.id && !this.connections[remotePeerId]) {
+            // get connection from new connections
+            // change its id
+            // remove from new connections and add to connections
+            const connection = this.newConnections[tempraryId]
+            connection.id = remotePeerId
+            connection.updateGuiLabel()
+            this.connections[connection.id] = connection
+            delete this.newConnections[tempraryId]
             // all all current streams to connection
             Object.values(this.sendStreams).forEach(stream => {
-                this.connectingConnection.addStream(stream)
+                connection.addStream(stream)
             })
-            // free the connecting connection reference
-            this.connectingConnection = null
         } else {
             throw new Error('id conflict')
         }
@@ -201,7 +206,7 @@ class LocalPeer {
 class Connection {
     constructor(config) {
         this.config = config
-        this.remotePeerId = null // remote peer sends its id once connected
+        this.id = generateUUID() // remote peer sends its id once connected, this id temporary
         this.reset()
         this.open()
     }
@@ -244,11 +249,10 @@ class Connection {
 
         this.rtcpc = new RTCPeerConnection(this.config)
         this.createDataChannels()
-
+        this.dataChannelReceiveListener()
         this.negotiationListener()
         this.streamReceiveListener()
-        this.dataChannelReceiveListener()
-
+        
         this.createGui()
     }
 
@@ -374,29 +378,58 @@ class Connection {
     createDataChannels() {
         this.createDataChannel({
             label: 'sdp',
-            onMessage: (event) => { sdpChannelOnMessage(event, this) }
+            onMessage: sdpChannelOnMessage
         })
 
         this.createDataChannel({
             label: 'id',
-            onMessage: (event) => { idChannelOnMessage(event, this) },
-            onOpen: (event) => { idChannelOnOpen(event, this) }
+            onMessage: idChannelOnMessage,
+            onOpen: idChannelOnOpen
+        })
+
+        this.createDataChannel({
+            label: 'newconnection',
+            onMessage: newConnectionChannelOnMessage
         })
     }
     
-    createDataChannel({label, onMessage, onOpen, onClose}) {
+    createDataChannel({label, onMessage=()=>{}, onOpen=()=>{}, onClose=()=>{}}) {
+        const receiveOrRelayMessage = (event) => {
+            const message = JSON.parse(event.data)
+            // messages has a destination peer and destination is not local peer 
+            if (message.to && message.to !== LOCAL_PEER.id) {
+                // if local peer has a connection to destination peer, relay to him
+                const toConnection = LOCAL_PEER.connections[message.to]
+                if (toConnection) {
+                    toConnection.sendMessage(event.target.label, message)
+                }
+                // ignore if local peer doesn't have a connection to destination peer
+
+            // receive message that doesn't have a destination peer or destination is local peer
+            } else {
+                onMessage(event, this)
+            }
+        }
         const dataChannel = {
             sendChannel: this.rtcpc.createDataChannel(label),
             receiveChannel: null,
-            onMessage: onMessage,
-            onOpen: onOpen,
-            onClose: onClose,
+            onMessage: (event) => { receiveOrRelayMessage(event, this) },
+            onOpen: (event) => { onOpen(event, this) },
+            onClose: (event) => { onClose(event, this) },
         }
         this.dataChannels[label] = dataChannel
     }
 
-    sendMessage(label, message) {
+    sendMessage(label, message, to) {
         // triggers remote peer datachannel message event
+        if (!message.from) {
+            // complete messate no created yet, add to and from
+            message = {
+                from: LOCAL_PEER.id,
+                to: to,
+                message: message
+            }
+        }
         const dataChannel = this.dataChannels[label]
         if (dataChannel && dataChannel.sendChannel.readyState  === 'open') {
             dataChannel.sendChannel.send(JSON.stringify(message))
@@ -435,8 +468,8 @@ class Connection {
 
     updateGuiLabel() {
         if (this.gui) {
-            this.gui.label.innerText = `Connection Remote Peer Id: ${this.remotePeerId}`
-            this.streamsGui.label.innerText = `Streams Remote Peer Id: ${this.remotePeerId}`
+            this.gui.label.innerText = `Connection Remote Peer Id: ${this.id}`
+            this.streamsGui.label.innerText = `Streams Remote Peer Id: ${this.id}`
         }
     }
 
@@ -449,14 +482,18 @@ class Connection {
             // negotiation elements
             const negotiationGui = new BaseGui({parent: this.gui.innerContainer})
             const negotiationTextarea = negotiationGui.appendElement('textarea')
+            const newOfferButon = negotiationGui.appendButton('New Offer')
             negotiationTextarea.readOnly = true
             negotiationGui.label.innerText = 'Connection Description: '
 
-            // get a and show new offer
-            let localDescription = await this.sendOffer()
-            negotiationTextarea.value = JSON.stringify(localDescription)
+            let localDescription
+            // create and show a new offer
+            newOfferButon.addEventListener('click', async () => {
+                localDescription = await this.sendOffer()
+                negotiationTextarea.value = JSON.stringify(localDescription)
+            })
 
-            // deal with subsequent pasted offers or answers
+            // deal with pasted offers or answers
             negotiationTextarea.addEventListener('paste', async (event) => {
 
                 // get description
@@ -564,19 +601,54 @@ class Connection {
     }
 }
 
-function idChannelOnOpen(event, connectionInstance) {
-    connectionInstance.sendMessage('id', LOCAL_PEER.id)
+function idChannelOnOpen(event, connection) {
+    connection.sendMessage('id', {
+        id: LOCAL_PEER.id,
+        connections: Object.keys(LOCAL_PEER.connections)
+    })
 }
 
-function idChannelOnMessage(event, connectionInstance) {
-    connectionInstance.remotePeerId = JSON.parse(event.data)
-    connectionInstance.updateGuiLabel()
-    LOCAL_PEER.addConnection()
+function idChannelOnMessage(event, connection) {
+    const IdAndConnections = JSON.parse(event.data).message
+    // add peer to connected list
+    LOCAL_PEER.connectionFirstConnected(connection.id, IdAndConnections.id)
+
+    // filter all peers that local peer does not know and remote peer knows
+    const newConnections = IdAndConnections.connections.filter(id => id !== LOCAL_PEER.id && !LOCAL_PEER.connections[id])
+
+    // ask remote peer to negotiate a connection with each not known peer
+    newConnections.forEach(async (remotePeerId) => {
+        // create or retrieve a new connection
+        let newConnection = LOCAL_PEER.newConnections[remotePeerId]
+        if (!newConnection) {
+            newConnection = LOCAL_PEER.newConnection(remotePeerId)
+        }
+        const offer = await newConnection.sendOffer()
+        connection.sendMessage('newconnection', offer, remotePeerId)
+    })
 }
 
-async function sdpChannelOnMessage(event, connectionInstance) {
-    const description = new RTCSessionDescription(JSON.parse(event.data))
-    connectionInstance.receiveOfferOrAnswer(description)
+async function sdpChannelOnMessage(event, connection) {
+    const description = new RTCSessionDescription(JSON.parse(event.data).message)
+    connection.receiveOfferOrAnswer(description)
+}
+
+async function newConnectionChannelOnMessage(event, connection) {
+    const message = JSON.parse(event.data)
+
+    // create or retrieve a new connection
+    let newConnection = LOCAL_PEER.newConnections[message.from]
+    if (!newConnection) {
+        newConnection = LOCAL_PEER.newConnection(message.from)
+    }
+
+    // process offer or answer with the connection
+    const answer = await newConnection.receiveOfferOrAnswer(message.message)
+
+    // send back a answer if exists
+    if (answer) {
+        connection.sendMessage('newconnection', answer, message.from)
+    }
 }
 
 const MAIN_GUI = new BaseGui()
@@ -594,4 +666,3 @@ function generateUUID() {
       throw new Error('Crypto API not available')
     }
 }
-
