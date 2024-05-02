@@ -204,9 +204,9 @@ class LocalPeer {
 }
 
 class Connection {
-    constructor(config) {
+    constructor(config, id) {
         this.config = config
-        this.id = generateUUID() // remote peer sends its id once connected, this id temporary
+        this.id = id || generateUUID() // remote peer sends its id once connected, this id temporary
         this.reset()
         this.open()
     }
@@ -398,7 +398,7 @@ class Connection {
             const message = JSON.parse(event.data)
             // messages has a destination peer and destination is not local peer 
             if (message.to && message.to !== LOCAL_PEER.id) {
-                // if local peer has a connection to destination peer, relay to him
+                // if local peer has a connection to destination peer, relay to him using the same channel label
                 const toConnection = LOCAL_PEER.connections[message.to]
                 if (toConnection) {
                     toConnection.sendMessage(event.target.label, message)
@@ -423,7 +423,7 @@ class Connection {
     sendMessage(label, message, to) {
         // triggers remote peer datachannel message event
         if (!message.from) {
-            // complete messate no created yet, add to and from
+            // create message metadata of it does not exist
             message = {
                 from: LOCAL_PEER.id,
                 to: to,
