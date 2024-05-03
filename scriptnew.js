@@ -7,30 +7,40 @@ class LocalPeer {
     }
 
     addRemotePeer(id) {
-        const remotePeer = new RemotePeer(this.connectionConfig, id)
-        this.remotePeers[remotePeer.id] = remotePeer
-        remotePeer.connection.addEventListener("connectionstatechange", (event) => {
-            if (remotePeer.connection.connectionState === 'failed' ||
-            remotePeer.connection.connectionState === 'disconnected' ||
-            remotePeer.connection.connectionState === 'closed') {
-                this.removeRemotePeer(remotePeer.id)
-            }
-        })
-        return remotePeer
+        if (!this.getRemotePeer(id)) {
+            const remotePeer = new RemotePeer(this.connectionConfig, id)
+            this.remotePeers[remotePeer.id] = remotePeer
+
+            // remove peer if something is wrong with the connection
+            remotePeer.connection.addEventListener("connectionstatechange", (event) => {
+                if (remotePeer.connection.connectionState === 'failed' ||
+                remotePeer.connection.connectionState === 'disconnected' ||
+                remotePeer.connection.connectionState === 'closed') {
+                    this.removeRemotePeer(remotePeer.id)
+                    // TODO try to reconnect somehow
+                }
+            })
+            return remotePeer
+        }
+        return null
     }
 
     removeRemotePeer(id) {
-        const remotePeer = this.remotePeers[id]
-        remotePeer.setConnection()
-        delete this.remotePeers[id]
+        const remotePeer = this.getRemotePeer(id)
+        if (remotePeer) {
+            remotePeer.resetConnection()
+            delete this.remotePeers[id]
+            return true
+        }
+        return false
     }
 
     getRemotePeer(id) {
         return this.remotePeers[id]
     }
 
-    async getOffer() {
-        const remotePeer = this.addRemotePeer()
+    async getFirstOffer(id) {
+        const remotePeer = this.addRemotePeer(id)
         const offer = await remotePeer.sendOffer()
         return {
             id: remotePeer.id,
@@ -38,10 +48,18 @@ class LocalPeer {
         }
     }
 
-    async receiveOfferOrAnswer(descriptionWithId) {
-        let remotePeer = this.getRemotePeer(descriptionWithId.id)
-        if (!remotePeer) {
+    async setFirstOfferOrAnswer(descriptionWithId) {
+        let remotePeer
+        // local peer creates a new remote peer instance to receive an offer
+        if(descriptionWithId.description.type === 'offer') {
             remotePeer = this.addRemotePeer()
+        // local peer retrives an existing connection instance to receive an answer
+        } else if (descriptionWithId.description.type === 'answer') {
+            remotePeer = this.getRemotePeer(descriptionWithId.id)
+            // instance not existing is an error
+            if (!remotePeer) {
+                throw new Error(`an offer for this answer does not exist. id: ${descriptionWithId.id}`)
+            }
         }
         const answer = await remotePeer.receiveOfferOrAnswer(descriptionWithId.description)
         return {
@@ -92,13 +110,13 @@ class LocalPeer {
 
 class RemotePeer {
     constructor(connectionConfig, id) {
-        this.id = id || generateUUID()
+        this.id = id || generateUUID() // remote peer will send its id once connected
         this.connectionConfig = connectionConfig
-        this.setConnection()
+        this.resetConnection()
         this.openConnection()
     }
 
-    setConnection() {
+    resetConnection() {
         // connection exists and its not closed
         if (this.connection && this.connection.connectionState !== 'closed') {
             // stop sending all streams
@@ -120,9 +138,11 @@ class RemotePeer {
     openConnection() {
         if (this.connection) {
             if (this.connection.connectionState === 'closed') {
-                this.setConnection() // make sure all properties are in initual value
+                // connection is closed
+                this.resetConnection() // make sure all properties are in initual value
             } else {
-                return // connection is already open
+                // connection is open, do nothing
+                return
             }
         }
 
@@ -164,21 +184,20 @@ class RemotePeer {
     streamListener() {
         // receive each track and the stream from remote peer that called addStream()
         this.connection.addEventListener('track', event => {
-            if (event.streams.length === 1) {
-                const stream = event.streams[0]
-                // if stream was not received before
-                if (!this.receiveStreams[stream.id]) {
-                    // adds it
-                    this.receiveStreams[stream.id] = stream
-                    // add event to remove stream when remote peer calls removeStream()
-                    stream.addEventListener('removetrack', event => {
-                        // removes it
-                        delete this.receiveStreams[event.target.id]
-                    })
-                }
-            } else {
+            if (!event.streams.length === 1) {
                 // the way addStrem is coded this event should aways receive a stream
                 throw new Error(`event.streams.length is ${event.streams.length}, expected 1`)
+            }
+            const stream = event.streams[0]
+            // if stream was not received before
+            if (!this.receiveStreams[stream.id]) {
+                // adds it
+                this.receiveStreams[stream.id] = stream
+                // add event to remove stream when remote peer calls removeStream()
+                stream.addEventListener('removetrack', event => {
+                    // removes it
+                    delete this.receiveStreams[event.target.id]
+                })
             }
         })
     }
@@ -191,15 +210,14 @@ class RemotePeer {
     }
 
     async receiveOfferOrAnswer(description) {
-        if (// receives an offer and signalingState is have-local-offer is an offer conflict
+        if (// receives an offer and signalingState is have-local-offer means an offer conflict
             description.type === 'offer' &&
             this.connection.signalingState === 'have-local-offer' &&
             // one peer should aways refuse
             // other peer should aways accept
             this.refuseIfOfferConflict) {
                 // refusing peer does nothing and wait for an answer
-                return  null
-        
+
         // both peers (or accepting peer on offer conflict) processes an offer and sends an answer
         } else if (description.type === 'offer') {
             await this.connection.setRemoteDescription(description)
@@ -209,7 +227,6 @@ class RemotePeer {
         // both peers accepts answers in any case
         } else if (description.type === 'answer') {
             await this.connection.setRemoteDescription(description)
-            // there is no further negotiation
             return  null
         }
     }
@@ -391,11 +408,10 @@ class BaseGui {
 
 function generateUUID() {
     const crypto = window.crypto
-    if (crypto) {
-      return crypto.randomUUID()
-    } else {
-      throw new Error('Crypto API not available')
+    if (!crypto) {
+        throw new Error('Crypto API not available')
     }
+    return crypto.randomUUID()
 }
 
 const LOCAL_PEER = new LocalPeer()
