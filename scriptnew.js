@@ -2,15 +2,15 @@ class LocalPeer {
     constructor(config) {
         this.id = generateUUID()
         this.config = config
-        this.connections = new UniqueObjectsWithGui((connection) => { this.removeConnection(connection) }, {label: 'Connections: '})
-        this.sendStreams = new UniqueObjectsWithGui((stream) => { this.removeStream(stream) }, {label: 'Streams:'})
+        this.connections = new UniqueObjectsWithGui()
+        this.sendStreams = new UniqueObjectsWithGui((stream) => { this.removeStream(stream) })
     }
 
     addNewConnection(id) {
-        // create new connection instance and adds it to the map of connections
+        // create new connection instance and adds it to connections
         const connection = new Connection(this.config, id)
-        const wasAdded = this.connections.add(connection)
-        if (wasAdded) {
+        const addedIfUnique = this.connections.add(connection)
+        if (addedIfUnique) {
             console.log(`added connection id ${connection.id}`)
 
             // if connection is not connected for sometime it gets removed
@@ -34,7 +34,7 @@ class LocalPeer {
                     console.log(`added all send streams to connection id ${connection.id}`)
                 }
 
-                // unrecoverable state
+                // unrecoverable states
                 if (connection.rtcpc.connectionState === 'failed' ||
                 connection.rtcpc.connectionState === 'disconnected' ||
                 connection.rtcpc.connectionState === 'closed') {
@@ -50,19 +50,19 @@ class LocalPeer {
     }
 
     removeConnection(connection) {
-        const wasRemoved = this.connections.remove(connection)
-        if (wasRemoved) {
+        const removedIfWasAdded = this.connections.remove(connection)
+        if (removedIfWasAdded) {
             connection.reset()
             console.log(`removed connection id ${connection.id}`)
         } else {
             console.log(`could not remove connection, id ${connection.id} does not exists`)
         }
-        return wasRemoved
     }
 
     addStream(stream) {
-        const wasAdded = this.sendStreams.add(stream)
-        if (wasAdded) {
+        const addedIfUnique = this.sendStreams.add(stream)
+        if (addedIfUnique) {
+            // add stream to all connections
             this.connections.forEach(connection => {
                 if (connection.rtcpc.connectionState === 'connected') {
                     connection.addStream(stream)
@@ -73,12 +73,11 @@ class LocalPeer {
         } else {
             console.log(`could not add stream id ${stream.id}, already exists`)
         }
-        return wasAdded
     }
 
     removeStream(stream) {
-        const wasRemoved = this.sendStreams.remove(stream)
-        if (wasRemoved) {
+        const removedIfWasAdded = this.sendStreams.remove(stream)
+        if (removedIfWasAdded) {
             this.connections.forEach(connection => {
                 if (connection.rtcpc.connectionState === 'connected') {
                     connection.removeStream(stream)
@@ -92,7 +91,6 @@ class LocalPeer {
         } else {
             console.log(`could not remove stream id ${stream.is}, does not exist`)
         }
-        return wasRemoved
     }
 
     async getFirstOffer() {
@@ -180,7 +178,10 @@ class Connection {
             this.rtcpc.getSenders().forEach(sender => {
                 this.rtcpc.removeTrack(sender)
             })
-            // closes it
+            // remove all streams and its elements
+            this.sendStreams.forEach(stream => this.sendStreams.remove(stream))
+            this.receiveStreams.forEach(stream => this.receiveStreams.remove(stream))
+            // closes the connection
             this.rtcpc.close()
         }
 
@@ -188,7 +189,7 @@ class Connection {
         this.rtcpc = null
         this.refuseIfOfferConflict = null // TODO make peers fight over this once connected
         this.dataChannels =  new UniqueObjectsWithGui()
-        this.sendStreams = new UniqueObjectsWithGui((stream) => { this.removeStream(stream) })
+        this.sendStreams = new UniqueObjectsWithGui()
         this.receiveStreams = new UniqueObjectsWithGui()
     }
 
@@ -218,8 +219,8 @@ class Connection {
 
     addStream(stream) {
         // add each track of the stream to the connection, will start sending to remote peer
-        const wasAdded = this.sendStreams.add(stream)
-        if (wasAdded) {
+        const addedIfUnique = this.sendStreams.add(stream)
+        if (addedIfUnique) {
             stream.getTracks().forEach(track => {
                 this.rtcpc.addTrack(track, stream)
             })
@@ -231,8 +232,8 @@ class Connection {
 
     removeStream(stream) {
         // removes each track of the stream from the connection, will stop sending to remote peer
-        const wasRemoved = this.sendStreams.remove(stream)
-        if(wasRemoved) {
+        const removedIfWasAdded = this.sendStreams.remove(stream)
+        if(removedIfWasAdded) {
             const senders = this.rtcpc.getSenders()
             stream.getTracks().forEach( track => {
                 const sender = senders.find(sender => sender.track === track)
@@ -252,15 +253,16 @@ class Connection {
                 throw new Error(`event.streams.length is ${event.streams.length}, expected 1`)
             }
             const stream = event.streams[0]
-            // if stream was not received before
-            const wasAdded = this.receiveStreams.add(stream)
-            if (wasAdded) {
+            // event receives the same stream for each track of the stream
+            // the stream is added on the first track received, the rest is ignored
+            const addedIfUnique = this.receiveStreams.add(stream)
+            if (addedIfUnique) {
                 console.log(`received stream id ${stream.id}`)
                 // add event to remove stream when remote peer calls removeStream()
                 stream.addEventListener('removetrack', event => {
                     // removes it
-                    console.log(`removed receive stream id ${stream.id} from connection id ${this.id}`)
                     this.receiveStreams.remove(stream)
+                    console.log(`removed receive stream id ${stream.id} from connection id ${this.id}`)
                 })
             }
         })
@@ -430,14 +432,22 @@ class Connection {
     }
 }
 
-// datachannel functions
+// datachannel and general functions
 
 async function sdpChannelOnMessage(event, connection) {
     const description = new RTCSessionDescription(JSON.parse(event.data).message)
     connection.receiveOfferOrAnswer(description)
 }
 
-// GUI
+function generateUUID() {
+    const crypto = window.crypto
+    if (!crypto) {
+        throw new Error('Crypto API not available')
+    }
+    return crypto.randomUUID()
+}
+
+// GUI Classes
 
 class LabeledContainer {
     /*
@@ -477,18 +487,39 @@ class LabeledContainer {
     }
 }
 
+
+// Works as a glue to associate visual elements to internal objects
+
 class UniqueObjectsWithGui {
-    constructor(askToRemove=()=>{}, superParams = {}) {
-        this.askToRemove = askToRemove
+    constructor(removeCallback=()=>{}) {
+        this.removeCallback = removeCallback
         this.objects = new Map()
+        this.htmlElementsCallbacks = new Set()
         this.elements = new Map()
     }
-    
+
     add(object) {
+        if (!object.id) {
+            throw new Error('objects must have a unique value named id')
+        }
+
         if (!this.objects.has(object.id)) {
+            // add object
             this.objects.set(object.id, object)
-            const element = this.createElement(object)
-            this.elements.set(object.id, element)
+
+            // add a list to store object elements
+            this.elements.set(object.id, [])
+            const elements = this.elements.get(object.id)
+
+            // create and store object elements created with htmlElementsCallbacks
+            this.htmlElementsCallbacks.forEach(htmlElementCallback => {
+                const htmlElement = htmlElementCallback(object, this.removeCallback)
+                if (htmlElement instanceof HTMLElement) {
+                    elements.push(htmlElement)
+                } else {
+                    throw new Error('htmlElementCallback must return a instance of HTMLElement')
+                }
+            })
             return true
         }
         return false
@@ -496,9 +527,13 @@ class UniqueObjectsWithGui {
 
     remove(object) {
         if (this.objects.has(object.id)) {
+            // remove object
             this.objects.delete(object.id)
-            const element = this.elements.get(object.id)
-            element.remove()
+            
+            // remove all object elements
+            this.elements.get(object.id).forEach(element => element.remove())
+
+            // remove elements list
             this.elements.delete(object.id)
             return true
         }
@@ -506,47 +541,87 @@ class UniqueObjectsWithGui {
     }
 
     get(id) {
-        const object = this.objects.get(id)
-        if (object) {
-            return object
-        }
-        return null
+        // abstracts objects.get
+        return this.objects.get(id)
     }
 
     forEach(callback) {
+        // abstracts objects.forEach
         return this.objects.forEach(callback)
     }
 
-    createElement(object) {
-        // overwrite this to return a html element associated with the object
-        // use this.askToRemove to make the class kill the object
-        const element = document.createElement('div')
-        element.innerText = object.id
-        document.querySelector('body').append(element)
-        element.addEventListener('click', () => {
-            this.askToRemove(object)
-        })
-        return element
+    addHtmlElement(htmlElementCallback) {
+        // function should be in specs below
+        // (object, removeCallback) => {return htmlElement}
+        // optionally call removeCallback(object) inside function
+        this.htmlElementsCallbacks.add(htmlElementCallback)
     }
-}
 
-function generateUUID() {
-    const crypto = window.crypto
-    if (!crypto) {
-        throw new Error('Crypto API not available')
+    removeHtmlElement(htmlElementCallback) {
+        this.htmlElementsCallbacks.delete(htmlElementCallback)
     }
-    return crypto.randomUUID()
 }
 
 // create local peer instance
 
 const LOCAL_PEER = new LocalPeer()
 
+// Build GUI
+
+const localPeerContainer = new LabeledContainer({label: 'Local Peer:'})
+const streamVideoElements = new LabeledContainer({label: 'Streams:'})
+const connectionsContainer = new LabeledContainer({
+    label: 'Connections:',
+    parent: localPeerContainer.innerContainer
+})
+
+
+LOCAL_PEER.connections.addHtmlElement((connection, removeCallback) => {
+    const connectionContainer = new LabeledContainer({
+        label: `state: ${connection.rtcpc.connectionState} id:${connection.id}`,
+        parent: connectionsContainer.innerContainer})
+
+    const sendStreamsContainer = new LabeledContainer({
+        label: 'Send Streams:',
+        parent: connectionContainer.innerContainer
+    })
+
+    const receiveStreamsContainer = new LabeledContainer({
+        label: 'Receive Streams:',
+        parent: connectionContainer.innerContainer
+    })
+
+    connection.rtcpc.addEventListener('connectionstatechange', () => {
+        connectionContainer.label.innerText = `state: ${connection.rtcpc.connectionState} id:${connection.id}`
+    })
+
+    connection.sendStreams.addHtmlElement((stream, removeCallback) => {
+        const streamElement = sendStreamsContainer.appendElement('div')
+        streamElement.innerText = stream.id
+        return streamElement
+    })
+
+    connection.receiveStreams.addHtmlElement((stream, removeCallback) => {
+        const streamElement = receiveStreamsContainer.appendElement('div')
+        streamElement.innerText = stream.id
+        return streamElement
+    })
+
+    return connectionContainer.OuterContainer
+})
+
+/*
+LOCAL_PEER.sendStreams.addHtmlElement((connection, removeCallback) => {
+})
+*/
+
+
 // streams gui
 
 const streamsButtonsContainer = new LabeledContainer({label: 'Add Streams:'})
 const addUserStreamButton = streamsButtonsContainer.appendButton('Add User Stream')
 const addDisplayStreamButton = streamsButtonsContainer.appendButton('Add Display Stream')
+
 addUserStreamButton.addEventListener('click', () => {
     LOCAL_PEER.addUserStream()
 })
