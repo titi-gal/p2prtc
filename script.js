@@ -118,14 +118,9 @@ class LocalPeer {
 
         // retrives the connection that made the offer to receive an answer
         } else if (firstDescription.description.type === 'answer') {
-            const connection = this.connections.get(firstDescription.connectionId)
+            // updates and returns connections if exists
+            const connection = this.connections.update(firstDescription.connectionId, firstDescription.fromId)
             if (connection) {
-
-                // update connection id to be remote peer id
-                this.connections.remove(connection)
-                connection.id = firstDescription.fromId
-                this.connections.add(connection)
-
                 // accept answer
                 await connection.receiveOfferOrAnswer(firstDescription.description)
                 console.log(`received first answer from remote peer id ${firstDescription.fromId}`)
@@ -297,7 +292,7 @@ class Connection {
 
     async sendAndReturnLocalDescription() {
         // send description to remote peer, (will receive if datachannel is open)
-        this.sendMessage('sdp', this.rtcpc.localDescription)
+        this.sendMessage('description', this.rtcpc.localDescription)
 
         // return description on ice complete
         // if ice is already complete returns local description
@@ -346,11 +341,15 @@ class Connection {
 
     createDataChannels() {
         this.createDataChannel({
-            label: 'sdp',
-            onMessage: sdpChannelOnMessage,
+            label: 'description',
+            onMessage: descriptionChannelOnMessage,
             onOpen: sdpChannelOnOpen
         })
-
+        this.createDataChannel({
+            label: 'firstdescription',
+            onMessage: firstDescriptionChannelOnMessage,
+            onOpen: firstDescriptionChannelOnOpen
+        })
         this.createDataChannel({
             label: 'icecandidate',
             onMessage: iceCandidateChannelOnMessage,
@@ -435,7 +434,30 @@ class Connection {
 
 // datachannel and general functions
 
-async function sdpChannelOnMessage(event, connection) {
+async function firstDescriptionChannelOnOpen(event, connection) {
+
+    connection.sendMessage('firstdescription', {ids: Array.from(LOCAL_PEER.connections.keys())})
+}
+
+async function firstDescriptionChannelOnMessage(event, connection) {
+    const message = JSON.parse(event.data)
+    if (message.message.firstDescription) {
+        const firstDescription = message.message.firstDescription
+        const firstAnswer = await LOCAL_PEER.setFirstOfferOrAnswer(firstDescription)
+        if (firstAnswer) {
+            connection.sendMessage('firstdescription', {firstDescription: firstAnswer}, message.from)
+        }
+    } else if (message.message.ids) {
+        const ids = message.message.ids
+        const unconnectedIds = ids.filter( id => {return id !== LOCAL_PEER.id && !LOCAL_PEER.connections.has(id)})
+        unconnectedIds.forEach(async (id) => {
+            const firstOffer = await LOCAL_PEER.getFirstOffer()
+            connection.sendMessage('firstdescription', {firstDescription: firstOffer}, id)
+        })
+    }
+}
+
+async function descriptionChannelOnMessage(event, connection) {
     const description = new RTCSessionDescription(JSON.parse(event.data).message)
     connection.receiveOfferOrAnswer(description)
 }
@@ -500,13 +522,23 @@ class LabeledContainer {
     }
 }
 
-class UniqueObjectsWithGui {
-    // Works as a glue to associate visual elements to internal objects
-    constructor(removeCallback=()=>{}) {
-        this.removeCallback = removeCallback
-        this.objects = new Map()
+class UniqueObjectsWithGui extends Map {
+    constructor(removeCallback = () => {}) {
+        super()
+        this.removeCallback = removeCallback;
         this.htmlElementsCallbacks = new Set()
         this.elements = new Map()
+    }
+
+    update(oldId, newId) {
+        if (this.has(oldId)) {
+            const object = this.get(oldId)
+            this.delete(object.id)
+            object.id = newId
+            this.set(object.id, object)
+            return object
+        }
+        return null
     }
 
     add(object) {
@@ -514,9 +546,9 @@ class UniqueObjectsWithGui {
             throw new Error('objects must have a unique value named id')
         }
 
-        if (!this.objects.has(object.id)) {
+        if (!this.has(object.id)) {
             // add object
-            this.objects.set(object.id, object)
+            this.set(object.id, object)
 
             // add a list to store object elements
             this.elements.set(object.id, [])
@@ -537,9 +569,9 @@ class UniqueObjectsWithGui {
     }
 
     remove(object) {
-        if (this.objects.has(object.id)) {
+        if (this.has(object.id)) {
             // remove object
-            this.objects.delete(object.id)
+            this.delete(object.id)
             
             // remove all object elements
             this.elements.get(object.id).forEach((element) => {
@@ -551,16 +583,6 @@ class UniqueObjectsWithGui {
             return true
         }
         return false
-    }
-
-    get(id) {
-        // abstracts objects.get
-        return this.objects.get(id)
-    }
-
-    forEach(callback) {
-        // abstracts objects.forEach
-        return this.objects.forEach(callback)
     }
 
     addHtmlElement(htmlElementCallback) {
@@ -578,7 +600,7 @@ class UniqueObjectsWithGui {
 // create local peer instance
 
 const LOCAL_PEER = new LocalPeer()
-const localPeerContainer = new LabeledContainer({label: 'Local Peer:'})
+const localPeerContainer = new LabeledContainer({label: `Local Peer id ${LOCAL_PEER.id}`})
 
 // local peer gui
 
@@ -620,7 +642,9 @@ const GetOfferButton = connectionDescription.appendButton('Get Offer')
 GetOfferButton.addEventListener('click', async () => {
     LOCAL_PEER.config = JSON.parse(connnectionConfigTextarea.value)
     const firstOffer = await LOCAL_PEER.getFirstOffer()
-    descriptionTextarea.value = JSON.stringify(firstOffer)
+    const firstOfferString = JSON.stringify(firstOffer)
+    await navigator.clipboard.writeText(firstOfferString)
+    descriptionTextarea.value = firstOfferString
 })
 
 descriptionTextarea.addEventListener('paste', async (event) => {
@@ -639,11 +663,20 @@ descriptionTextarea.addEventListener('paste', async (event) => {
         const firstAnswer = await LOCAL_PEER.setFirstOfferOrAnswer(pastedDescription)
         // show answer if it exists
         if (firstAnswer) {
-            event.target.value = JSON.stringify(firstAnswer)
-        } else {event.target.value = ''}
+            const firstAnswerString = JSON.stringify(firstAnswer)
+            await navigator.clipboard.writeText(firstAnswerString)
+            event.target.value = JSON.stringify(firstAnswerString)
+        } else {
+            event.target.value = ''
+        }
     } catch (error) {
         event.target.value = `error receiving description: ${error.toString()}`
     }
+})
+
+descriptionTextarea.addEventListener('mousedown', (event) => {
+    event.preventDefault()
+    descriptionTextarea.select()
 })
 
 const streamVideoElements = new LabeledContainer({label: 'Streams:'})
