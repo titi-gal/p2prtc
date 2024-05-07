@@ -665,7 +665,7 @@ descriptionTextarea.addEventListener('paste', async (event) => {
         if (firstAnswer) {
             const firstAnswerString = JSON.stringify(firstAnswer)
             await navigator.clipboard.writeText(firstAnswerString)
-            event.target.value = JSON.stringify(firstAnswerString)
+            event.target.value = firstAnswerString
         } else {
             event.target.value = ''
         }
