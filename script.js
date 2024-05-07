@@ -17,7 +17,7 @@ class LocalPeer {
             const removeConnectionTimeout = setTimeout(() => {
                 console.log(`idle connection id ${connection.id}`)
                 this.removeConnection(connection)
-            }, 1 * 60 * 1000) // 1 minute in milliseconds
+            }, 5 * 60 * 1000) // 1 minute in milliseconds
 
             // when connection state changes
             connection.rtcpc.addEventListener("connectionstatechange", (event) => {
