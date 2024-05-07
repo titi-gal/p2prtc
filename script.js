@@ -32,9 +32,10 @@ class LocalPeer {
                 if (connection.rtcpc.connectionState === 'failed' ||
                 connection.rtcpc.connectionState === 'disconnected' ||
                 connection.rtcpc.connectionState === 'closed') {
+                    // this.removeConnection(connection)
+                    // TODO
                     // remove connection
-                    this.removeConnection(connection)
-                    // TODO try to reconnect somehow
+                    // try to reconnect somehow
                 }
             })
             return connection
