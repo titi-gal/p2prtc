@@ -4,3 +4,7 @@ textarea {
     resize: vertical;
     width: calc(100% - 0.36rem);
 }
+
+video {
+    width: 100%;
+}
