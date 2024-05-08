@@ -1,4 +1,4 @@
-# p2p-rtc
+# p2prtc
 
 Right now I'm more focused on getting the underneath scaffolding code working than on having a nice UI.
 
