@@ -42,7 +42,7 @@ Not much explanation for the moment, as everything is changing, but if you want 
     Peer2: Paste the received offer, copy the generated answer, and send it to Peer1.
     Peer1: Paste the received answer.
 
-    Now, the peers should be connected. Repeat to add new peers; existing peers will be automatically connected when a new peer is added.
+    Now the peers should be connected. Repeat to add new peers. Existing peers will be automatically connected when a new peer is added.
 
 
 Inspired by: https://github.com/cjb/serverless-webrtc/
