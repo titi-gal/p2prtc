@@ -11,7 +11,7 @@ Right now I'm more focused on getting the underneath scaffolding code working th
 ## Instructions
 Not much explanation for the moment, as everything is changing, but if you want to mess around, here you go:
 
-1. Open in a Chromium browser (I only tested in the Brave browser): https://html-preview.github.io/?url=https://github.com/titi-gal/p2p-rtc/blob/main/p2p-rtc-single.html 
+1. Open in a Chromium browser (I only tested in the Brave browser): https://github.com/titi-gal/p2prtc/blob/main/p2prtc.html
     WARNING! Something in the way GitHub html-preview loads the JavaScript broke the code when testing, and I'm not feeling like debugging this right now. Download and open the file offline if you have any trouble.
 
 2. Paste a configuration with STUN and/or TURN servers in the Configuration textarea as in https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/RTCPeerConnection:
