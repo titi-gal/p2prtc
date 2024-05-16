@@ -520,18 +520,35 @@ class LabeledContainer {
         </div>
     </anyelement>
     */
-    constructor({label='', parent=document.querySelector('body')} = {}) {
-        this.parent = parent
+    constructor(labelText='', parentLabeledContainer=null) {
+
+        if (!parentLabeledContainer) {
+            this.indent = '='
+            this.parent = document.querySelector('body')
+        } else {    
+            this.indent = parentLabeledContainer.indent + '&nbsp;&nbsp;&nbsp;&nbsp;'
+            this.parent = parentLabeledContainer.innerContainer
+        }
+
         this.OuterContainer = document.createElement('div')
         this.innerContainer = document.createElement('div')
         this.label = document.createElement('label')
-        this.label.innerText = label
+        this.updateLabel(labelText)
+
         this.OuterContainer.append(this.label)
         this.OuterContainer.append(this.innerContainer)
         this.parent.append(this.OuterContainer)
 
+
         this.label.addEventListener('click', () => {
             this.innerContainer.toggleAttribute('hidden')
+            if (this.innerContainer.hidden) {
+                this.indent = '+' + this.indent.slice(1)
+                this.updateLabel(this.labelText)
+            } else {
+                this.indent = '=' + this.indent.slice(1)
+                this.updateLabel(this.labelText)
+            }
         })
     }
 
@@ -546,12 +563,23 @@ class LabeledContainer {
         button.innerText = text
         return button
     }
+
+    appendLabeledContainer(labelText) {
+        const labeledContainer = new LabeledContainer(labelText, this)
+        this.innerContainer.append(labeledContainer.OuterContainer)
+        return labeledContainer
+    }
+
+    updateLabel(labelText) {
+        this.labelText = labelText
+        this.label.innerHTML = this.indent + this.labelText
+    }
 }
 
 class UniqueObjectsWithGui extends Map {
     constructor(removeCallback = () => {}) {
         super()
-        this.removeCallback = removeCallback;
+        this.removeCallback = removeCallback
         this.htmlElementsCallbacks = new Set()
         this.elements = new Map()
     }
@@ -626,18 +654,21 @@ class UniqueObjectsWithGui extends Map {
 // create local peer instance
 
 const LOCAL_PEER = new LocalPeer()
-const localPeerContainer = new LabeledContainer({label: `Local Peer id ${LOCAL_PEER.id}`})
 
-// local peer gui
+// GUI
 
-const streamsButtonsContainer = new LabeledContainer({
-    label: 'Add Streams:',
-    parent: localPeerContainer.innerContainer
+// Main elements
 
-})
+const localPeerContainer = new LabeledContainer(`Local Peer id ${LOCAL_PEER.id}`)
+const streamVideoElements = new LabeledContainer('Streams')
 
-const addUserStreamButton = streamsButtonsContainer.appendButton('Add User Stream')
-const addDisplayStreamButton = streamsButtonsContainer.appendButton('Add Display Stream')
+const addStreamContainer = localPeerContainer.appendLabeledContainer('Add Stream')
+const addConnectionContainer = localPeerContainer.appendLabeledContainer('Add Connection')
+
+// Local Peer Add Stream
+
+const addUserStreamButton = addStreamContainer.appendButton('Add User Stream')
+const addDisplayStreamButton = addStreamContainer.appendButton('Add Display Stream')
 
 addUserStreamButton.addEventListener('click', () => {
     LOCAL_PEER.addUserStream()
@@ -646,22 +677,22 @@ addDisplayStreamButton.addEventListener('click', () => {
     LOCAL_PEER.addDisplayStream()
 })
 
-const newConnectionContainer = new LabeledContainer({
-    label: 'Add Connection:',
-    parent: localPeerContainer.innerContainer
+const AddedStreamsContainer = addStreamContainer.appendLabeledContainer('Added Streams')
+LOCAL_PEER.sendStreams.addHtmlElement((stream, removeCallback) => {
+    const streamContainer = AddedStreamsContainer.appendLabeledContainer(`${stream.id}`)
+        streamContainer.label.addEventListener('click', () => {
+        removeCallback(stream)
+    })
+    return streamContainer.OuterContainer
 })
 
-const localPeerSendStreamsContainer = new LabeledContainer({
-    label: 'Send Streams:',
-    parent: localPeerContainer.innerContainer
+// Local Peer Add Connection 
 
-})
-
-const connectionConfigContainer = new LabeledContainer({label: 'Configuration:', parent:newConnectionContainer.innerContainer})
+const connectionConfigContainer = addConnectionContainer.appendLabeledContainer('Configuration')
 const connnectionConfigTextarea = connectionConfigContainer.appendElement('textarea')
 connnectionConfigTextarea.value = '{}'
 
-const connectionDescription = new LabeledContainer({label: 'Description:', parent:newConnectionContainer.innerContainer})
+const connectionDescription = addConnectionContainer.appendLabeledContainer('Description')
 const descriptionTextarea = connectionDescription.appendElement('textarea')
 const GetOfferButton = connectionDescription.appendButton('Get Offer')
 
@@ -705,39 +736,76 @@ descriptionTextarea.addEventListener('mousedown', (event) => {
     descriptionTextarea.select()
 })
 
-const streamVideoElements = new LabeledContainer({label: 'Streams:'})
-const connectionsContainer = new LabeledContainer({
-    label: 'Connections:'})
-
+const AddedConnectionContainer = addConnectionContainer.appendLabeledContainer('Added Connections')
 LOCAL_PEER.connections.addHtmlElement((connection, removeCallback) => {
-    const connectionContainer = new LabeledContainer({
-        label: `${connection.id} ${connection.rtcpc.connectionState} `,
-        parent: connectionsContainer.innerContainer})
+    const connectionContainer = AddedConnectionContainer.appendLabeledContainer(`${connection.id} ${connection.rtcpc.connectionState} `)
+    const sendStreamsContainer = connectionContainer.appendLabeledContainer('Send Streams')
+    const receiveStreamsContainer = connectionContainer.appendLabeledContainer('Receive Streams')
+    const statesStatsContainer = connectionContainer.appendLabeledContainer('States and Stats')
 
-    const sendStreamsContainer = new LabeledContainer({
-        label: 'Send Streams:',
-        parent: connectionContainer.innerContainer
-    })
+    const statesStatsTextarea = statesStatsContainer.appendElement('textarea')
+    const writeStatesStats = () => {
+        connection.rtcpc.getStats().then((stats) => {
+            statesStatsTextarea.value = ''
 
-    const receiveStreamsContainer = new LabeledContainer({
-        label: 'Receive Streams:',
-        parent: connectionContainer.innerContainer
+            statesStatsTextarea.value += `Connection State: ${connection.rtcpc.connectionState}\n` +
+            `Signaling State: ${connection.rtcpc.signalingState}\n` +
+            `Ice Connection State: ${connection.rtcpc.iceConnectionState}\n` +
+            `Ice Gathering State: ${connection.rtcpc.iceGatheringState}\n` +
+            `\n`
+
+            stats.forEach((report) => {
+                statesStatsTextarea.value +=
+                `Report: ${report.type}\n` +
+                `ID: ${report.id}\n` +
+                `Timestamp: ${report.timestamp}\n`
+
+                // Now the statistics for this report we intentionally drop the ones we
+                // sorted to the top above
+                Object.keys(report).forEach((statName) => {
+                    if (
+                    statName !== "id" &&
+                    statName !== "timestamp" &&
+                    statName !== "type"
+                    ) {
+                        statesStatsTextarea.value += `${statName}: ${report[statName]}\n`
+                    }
+                })
+                statesStatsTextarea.value += `\n`
+            })
+        })
+    }
+    const updateStatesStats = () => {
+        writeStatesStats()
+        return setInterval(() => {
+            writeStatesStats()
+        }, 500)
+    }
+
+    let intervalId = updateStatesStats()
+    statesStatsContainer.label.addEventListener('click', (event) => {
+        if (!statesStatsContainer.innerContainer.hidden) {
+            intervalId = updateStatesStats()
+        } else {
+            clearInterval(intervalId)
+        }
     })
 
     connection.rtcpc.addEventListener('connectionstatechange', () => {
-        connectionContainer.label.innerText = `${connection.id} ${connection.rtcpc.connectionState}`
+        connectionContainer.updateLabel(`${connection.id} ${connection.rtcpc.connectionState}`)
+        if (!statesStatsContainer.innerContainer.hidden) {
+            writeStatesStats()
+        }
     })
 
     connection.sendStreams.addHtmlElement((stream, removeCallback) => {
-        const streamElement = sendStreamsContainer.appendElement('div')
-        streamElement.innerText = stream.id
-        return streamElement
+        const streamContainer = sendStreamsContainer.appendLabeledContainer(`${stream.id}`)
+        return streamContainer.OuterContainer
     })
 
     connection.receiveStreams.addHtmlElement((stream, removeCallback) => {
-        const streamElement = receiveStreamsContainer.appendElement('div')
-        streamElement.innerText = stream.id
-        return streamElement
+        const streamContainer = receiveStreamsContainer.appendLabeledContainer(`${stream.id}`)
+        return streamContainer.OuterContainer
     })
 
     connection.receiveStreams.addHtmlElement((stream, removeCallback) => {
@@ -783,14 +851,6 @@ LOCAL_PEER.sendStreams.addHtmlElement((stream, removeCallback) => {
     return videoElement
 })
 
-LOCAL_PEER.sendStreams.addHtmlElement((stream, removeCallback) => {
-    const streamElement = localPeerSendStreamsContainer.appendElement('div')
-    streamElement.innerText = stream.id
-    streamElement.addEventListener('click', () => {
-        removeCallback(stream)
-    })
-    return streamElement    
-})
 </script>
 
 </body>
