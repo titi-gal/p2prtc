@@ -660,19 +660,18 @@ const LOCAL_PEER = new LocalPeer()
 // Main elements
 
 const localPeerContainer = new LabeledContainer(`Local Peer id ${LOCAL_PEER.id}`)
-const streamVideoElements = new LabeledContainer('Streams')
-
 const addStreamContainer = localPeerContainer.appendLabeledContainer('Add Stream')
 const addConnectionContainer = localPeerContainer.appendLabeledContainer('Add Connection')
+const streamVideoElements = new LabeledContainer('Streams')
 
-// Local Peer Add Stream
+// Add Stream
 
 const addUserStreamButton = addStreamContainer.appendButton('Add User Stream')
-const addDisplayStreamButton = addStreamContainer.appendButton('Add Display Stream')
-
 addUserStreamButton.addEventListener('click', () => {
     LOCAL_PEER.addUserStream()
 })
+
+const addDisplayStreamButton = addStreamContainer.appendButton('Add Display Stream')
 addDisplayStreamButton.addEventListener('click', () => {
     LOCAL_PEER.addDisplayStream()
 })
@@ -686,44 +685,31 @@ LOCAL_PEER.sendStreams.addHtmlElement((stream, removeCallback) => {
     return streamContainer.OuterContainer
 })
 
-// Local Peer Add Connection 
+// Add Connection 
 
+//connection config
 const connectionConfigContainer = addConnectionContainer.appendLabeledContainer('Configuration')
 const connnectionConfigTextarea = connectionConfigContainer.appendElement('textarea')
-connnectionConfigTextarea.value = 'copy connection configuration'
-
-const connectionDescription = addConnectionContainer.appendLabeledContainer('Description')
-const descriptionTextarea = connectionDescription.appendElement('textarea')
-descriptionTextarea.value = 'get offer or copy received offer'
-const GetOfferButton = connectionDescription.appendButton('Get Offer')
-
+connnectionConfigTextarea.value = 'paste connection configuration'
+try {
+    LOCAL_PEER.config = JSON.parse(connnectionConfigTextarea.value)
+} catch (error) {
+    connnectionConfigTextarea.value = 'paste connection configuration'
+    console.log(`error parsing connection config JSON: ${error.toString()}`)
+}
 connnectionConfigTextarea.addEventListener('paste', (event) => {
     let pastedConfig
     try {
         LOCAL_PEER.config = JSON.parse(event.clipboardData.getData('text'))
     } catch (error) {
-        event.target.value = `error parsing JSON: ${error.toString()}`
-        return
+        event.target.value = `error parsing connection config JSON: ${error.toString()}`
     }
 })
 
-GetOfferButton.addEventListener('click', async () => {
-    const firstOffer = await LOCAL_PEER.getFirstOffer()
-    const firstOfferString = JSON.stringify(firstOffer)
-
-    // trying copping to clipboard
-    try {
-        await navigator.clipboard.writeText(firstOfferString)
-        descriptionTextarea.value = 'offer coppied to clipboard, send it to other peer and copy received answer'
-        
-    }
-    // if something went wrong show offer to be coped manually
-    catch (error) {
-        descriptionTextarea.value = firstOfferString
-        console.log(`error coping offer to clipboard: ${error.toString()}`)
-    }
-})
-
+//connection description
+const connectionDescription = addConnectionContainer.appendLabeledContainer('Description')
+const descriptionTextarea = connectionDescription.appendElement('textarea')
+descriptionTextarea.value = 'get offer or paste received offer'
 descriptionTextarea.addEventListener('paste', async (event) => {
     event.preventDefault()
     // get description
@@ -742,7 +728,7 @@ descriptionTextarea.addEventListener('paste', async (event) => {
         if (firstAnswer) {
             const firstAnswerString = JSON.stringify(firstAnswer)
 
-            // trying copping to clipboard
+            // trying copying to clipboard
             try {
                 await navigator.clipboard.writeText(firstAnswerString)
                 event.target.value = 'answer coppied to clipboard, send it to other peer'
@@ -754,25 +740,54 @@ descriptionTextarea.addEventListener('paste', async (event) => {
                 console.log(`error coping answer to clipboard: ${error.toString()}`)
             }
         } else {
-            event.target.value = 'answer received, get offer or copy received offer'
+            event.target.value = 'answer received, get offer or paste received offer'
         }
     } catch (error) {
         event.target.value = `error receiving description: ${error.toString()}`
     }
 })
-
 descriptionTextarea.addEventListener('mousedown', (event) => {
     event.preventDefault()
     descriptionTextarea.select()
 })
 
+const GetOfferButton = connectionDescription.appendButton('Get Offer')
+GetOfferButton.addEventListener('click', async () => {
+    const firstOffer = await LOCAL_PEER.getFirstOffer()
+    const firstOfferString = JSON.stringify(firstOffer)
+
+    // trying copying to clipboard
+    try {
+        await navigator.clipboard.writeText(firstOfferString)
+        descriptionTextarea.value = 'offer coppied to clipboard, send it to other peer and paste received answer'
+        
+    }
+    // if something went wrong show offer to be coped manually
+    catch (error) {
+        descriptionTextarea.value = firstOfferString
+        console.log(`error coping offer to clipboard: ${error.toString()}`)
+    }
+})
+
+//added connections
 const AddedConnectionContainer = addConnectionContainer.appendLabeledContainer('Added Connections')
 LOCAL_PEER.connections.addHtmlElement((connection, removeCallback) => {
-    const connectionContainer = AddedConnectionContainer.appendLabeledContainer(`${connection.id} ${connection.rtcpc.connectionState} `)
-    const sendStreamsContainer = connectionContainer.appendLabeledContainer('Send Streams')
-    const receiveStreamsContainer = connectionContainer.appendLabeledContainer('Receive Streams')
-    const statesStatsContainer = connectionContainer.appendLabeledContainer('States and Stats')
 
+    const connectionContainer = AddedConnectionContainer.appendLabeledContainer(`${connection.id} ${connection.rtcpc.connectionState} `)
+
+    const sendStreamsContainer = connectionContainer.appendLabeledContainer('Send Streams')
+    connection.sendStreams.addHtmlElement((stream, removeCallback) => {
+        const streamContainer = sendStreamsContainer.appendLabeledContainer(`${stream.id}`)
+        return streamContainer.OuterContainer
+    })
+
+    const receiveStreamsContainer = connectionContainer.appendLabeledContainer('Receive Streams')
+    connection.receiveStreams.addHtmlElement((stream, removeCallback) => {
+        const streamContainer = receiveStreamsContainer.appendLabeledContainer(`${stream.id}`)
+        return streamContainer.OuterContainer
+    })
+
+    const statesStatsContainer = connectionContainer.appendLabeledContainer('States and Stats')
     const statesStatsTextarea = statesStatsContainer.appendElement('textarea')
     const writeStatesStats = () => {
         connection.rtcpc.getStats().then((stats) => {
@@ -811,7 +826,6 @@ LOCAL_PEER.connections.addHtmlElement((connection, removeCallback) => {
             writeStatesStats()
         }, 500)
     }
-
     let intervalId = updateStatesStats()
     statesStatsContainer.label.addEventListener('click', (event) => {
         if (!statesStatsContainer.innerContainer.hidden) {
@@ -828,16 +842,7 @@ LOCAL_PEER.connections.addHtmlElement((connection, removeCallback) => {
         }
     })
 
-    connection.sendStreams.addHtmlElement((stream, removeCallback) => {
-        const streamContainer = sendStreamsContainer.appendLabeledContainer(`${stream.id}`)
-        return streamContainer.OuterContainer
-    })
-
-    connection.receiveStreams.addHtmlElement((stream, removeCallback) => {
-        const streamContainer = receiveStreamsContainer.appendLabeledContainer(`${stream.id}`)
-        return streamContainer.OuterContainer
-    })
-
+    // add receive stream video element
     connection.receiveStreams.addHtmlElement((stream, removeCallback) => {
         const videoElement = streamVideoElements.appendElement('video')
         videoElement.id = stream.id
