@@ -128,19 +128,25 @@ class LocalPeer {
 
     async setFirstOfferOrAnswer(firstDescription) {
 
+
+        // refuse own offer or answer
+        if (firstDescription.fromId == this.id) {
+            return new Error(`given own offer or answer`)
+        }
+
         // creates a connection with fromId (thats the remote peer id) to receive an offer
-        if(firstDescription.description.type === 'offer') {
-            const connection = this.addNewConnection(firstDescription.fromId)
-            if (connection) {
-                // receive the offer and return the answer
-                const answer = await connection.receiveOfferOrAnswer(firstDescription.description)
-                console.log(`received first offer of remote peer id ${firstDescription.fromId} connection id ${firstDescription.connectionId}`)
-                return {
-                    fromId: this.id,
-                    connectionId: firstDescription.connectionId,
-                    description: answer
+        else if(firstDescription.description.type === 'offer') {
+                const connection = this.addNewConnection(firstDescription.fromId)
+                if (connection) {
+                    // receive the offer and return the answer
+                    const answer = await connection.receiveOfferOrAnswer(firstDescription.description)
+                    console.log(`received first offer of remote peer id ${firstDescription.fromId} connection id ${firstDescription.connectionId}`)
+                    return {
+                        fromId: this.id,
+                        connectionId: firstDescription.connectionId,
+                        description: answer
+                    }
                 }
-            }
 
         // retrives the connection that made the offer to receive an answer
         } else if (firstDescription.description.type === 'answer') {
@@ -587,9 +593,9 @@ class UniqueObjectsWithGui extends Map {
     update(oldId, newId) {
         if (this.has(oldId)) {
             const object = this.get(oldId)
-            this.remove(object)
+            this.delete(object)
             object.id = newId
-            this.add(object)
+            this.set(object.id, object)
             return object
         }
         return null
