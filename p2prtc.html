@@ -43,7 +43,103 @@
     </div>
     <div id="streams"></div>
 <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <div id="clipboardTextareaContainer" hidden>
+        <label id="clipboardTextareaLabel" for="clipboardTextarea"></label>
+        <textarea id="clipboardTextarea"></textarea>
+    </div>
+    <div id="messagesDiv"></div>
+    <div>
+        <button type="button" id="newUserStreamButton">New User Stream</button>
+        <button type="button" id="newDisplayStreamButton">New Display Stream</button>
+    </div>
+    <div>
+        <button type="button" id="sendConnectionButton">Send Connection Message</button>
+        <button type="button" id="receiveConnectionButton">Receive Connection Message</button>
+    </div>
+    <div>
+        <button type="button" id="getConfigurationButton">Get Connection Configuration</button>
+        <button type="button" id="setConfigurationButton">Set Connection Configuration</button>
+    </div>
+    <div id="streams"></div>
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script>
+
+// identify local peer
+const LOCAL_PEER_ID = window.crypto.randomUUID()
+
+// mainly to set STUN and TURN servers see
+// https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/RTCPeerConnection
+let CONNECTION_CONFIG = {}
+
+// connections and streams are stored here
+const CONNECTIONS = new Map()
+const SEND_STREAMS = new Map()
+const RECEIVE_STREAMS = new Map()
+const STREAMS_CONTAINER = document.getElementById('streams')
+
+// data channels with this labels are created upon calling newConnection
+// message, open and close callBacks are called upon receiving events on the matching dataChannel
+/*
+example
+
+DATA_CHANNELS = {
+    label1: {
+        message: () => {},
+        open: () => {},
+        close: () => {}
+    },
+
+    label2: {...}
+}
+*/
+
+const DATA_CHANNELS = {
+    negotiation: {
+        message: (message, connection ) => {
+            receiveDescription(message, connection)
+        },
+        open: (connection) => {
+            SEND_STREAMS.forEach(stream => {
+                addSendStream(stream, connection)
+            })
+        }
+    },
+    relaynegotiation: {
+        message: async (message, connection) => {
+            if (message.payload.remotePeerIds) {
+                const remotePeerIds = message.payload.remotePeerIds
+                const unconnectedIds = remotePeerIds.filter(remotePeerId => {
+                    return remotePeerId !== LOCAL_PEER_ID && !CONNECTIONS.has(remotePeerId)
+                })
+                unconnectedIds.forEach(async (remotePeerId) => {
+                    const firstOffer = await sendDescription()
+                    sendMessage(connection, 'relaynegotiation', {firstDescription: firstOffer}, remotePeerId)
+                })
+
+            } else if (message.payload.firstDescription) {
+                const firstDescription = message.payload.firstDescription
+                const firstAnswer = await sendDescription(firstDescription)
+                if (firstAnswer) {
+                    sendMessage(connection, 'relaynegotiation', {firstDescription: firstAnswer}, message.from)
+                }
+            }
+        },
+        open: (connection) => {
+            const remotePeerIds = Array.from(CONNECTIONS.keys())
+            sendMessage(connection, 'relaynegotiation', {remotePeerIds: remotePeerIds})
+        },
+    },
+    icecandidate: {
+        'message': (message, connection) => {
+            connection.rtcpc.addIceCandidate(message.payload)
+        }
+    },
+    offerconflict: {
+        message: (message, connection) => {
+            const remoteReceiveOnOfferConflict = message.payload
+            if (remoteReceiveOnOfferConflict === connection.receiveOnOfferConflict) {
+                connection.receiveOnOfferConflict = Math.random() >= 0.5
+                sendMessage(connection, 'offerconflict', connection.receiveOnOfferConflict)
 
 // identify local peer
 const LOCAL_PEER_ID = window.crypto.randomUUID()
@@ -125,6 +221,9 @@ const DATA_CHANNELS = {
         },
         open: (connection) => {
             sendMessage(connection, 'offerconflict', connection.receiveOnOfferConflict)
+        },
+        open: (connection) => {
+            sendMessage(connection, 'offerconflict', connection.receiveOnOfferConflict)
         }
     }
 }
@@ -147,7 +246,28 @@ function sendMessage(connection, label, message, relayTo) {
         if (!message.from) {
             if (relayTo) {
                 message = makeMessage(message, relayTo)
+}
+
+// every message has a from id, to id, ,floods and a payload
+// peers expect to receive messages in this format
+function makeMessage(payload, remotePeerId, floods=0) {
+    return {
+        from: LOCAL_PEER_ID,
+        to: remotePeerId,
+        floods: floods,
+        payload: payload
+    }
+}
+
+function sendMessage(connection, label, message, relayTo) {
+    const dataChannel = connection.sendDataChannels.get(label)
+    if (dataChannel.readyState  === 'open') {
+        // if just payload was given, create a message from it
+        if (!message.from) {
+            if (relayTo) {
+                message = makeMessage(message, relayTo)
             } else {
+                message = makeMessage(message, connection.remotePeerId)
                 message = makeMessage(message, connection.remotePeerId)
             }
         }
@@ -205,11 +325,235 @@ function addSendStream(stream) {
         videoElement.addEventListener('click', (event) => {
             if (confirm(`Do you want to remove stream id ${event.target.srcObject.id}?`)) {
                 removeSendStream(stream)
+        dataChannel.send(JSON.stringify(message))
+    }
+}
+
+//add and remove send and receive streams
+
+async function newUserStream() {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true})
+    addSendStream(stream)
+}
+
+async function newDisplayStream() {
+    const stream = await navigator.mediaDevices.getDisplayMedia({audio: true, video: true})
+    addSendStream(stream)
+}
+
+function addSendStream(stream) {
+    CONNECTIONS.forEach(connection => {
+        stream.getTracks().forEach(track => {
+            const senders = connection.rtcpc.getSenders()
+            const trackSender = senders.find(sender => sender.track === track)
+            if(!trackSender) {
+                connection.rtcpc.addTrack(track, stream)
+            }
+        })
+    })
+
+    if (!SEND_STREAMS.has(stream.id)) {
+        SEND_STREAMS.set(stream.id, stream)
+
+        const videoElement = addStreamElement(stream)
+
+        // mute stream so there is no audio feedback by defaut
+        videoElement.muted = true
+        
+        // enable tracks on play
+        videoElement.addEventListener('play', event => {
+            const stream = event.target.srcObject
+            stream.getTracks().forEach(track => {
+                track.enabled = true
+            })
+        })
+        // disable tracks on pause
+        videoElement.addEventListener('pause', event => {
+            const stream = event.target.srcObject
+            stream.getTracks().forEach(track => {
+                track.enabled = false
+            })
+        })
+
+        // remove stream on click
+        videoElement.addEventListener('click', (event) => {
+            if (confirm(`Do you want to remove stream id ${event.target.srcObject.id}?`)) {
+                removeSendStream(stream)
             } else {
+                event.preventDefault()
                 event.preventDefault()
             }
         })
     }
+}
+
+function removeSendStream(stream) {
+    stream.getTracks().forEach(track => {
+        CONNECTIONS.forEach(connection => {
+            const senders = connection.rtcpc.getSenders()
+            const trackSender = senders.find(sender => sender.track === track)
+            connection.rtcpc.removeTrack(trackSender)
+        })
+        track.stop()
+    })
+    SEND_STREAMS.delete(stream.id)
+    removeStreamElement(stream)
+}
+
+function addReceiveStream(stream) {
+    if (!RECEIVE_STREAMS.has(stream.id)) {
+        RECEIVE_STREAMS.set(stream.id, stream)
+        addStreamElement(stream)
+    }
+}
+
+function removeReceiveStream(stream) {
+    if (RECEIVE_STREAMS.has(stream.id)) {
+        RECEIVE_STREAMS.delete(stream.id)
+        stream.getTracks().forEach(track => {
+            track.stop()
+        })
+        removeStreamElement(stream)
+    }
+}
+
+function addStreamElement(stream) {
+    const videoElement = document.createElement('video')
+    STREAMS_CONTAINER.append(videoElement)
+    videoElement.id = stream.id
+    videoElement.srcObject = stream
+    videoElement.controls = true
+    videoElement.play()
+    return videoElement
+}
+
+function removeStreamElement(stream) {
+    const videoElement = STREAMS_CONTAINER.querySelector(`[id="${stream.id}"]`)
+    if (videoElement) {
+        videoElement.remove()
+    }
+}
+
+// send and receive description
+// new connections are created when calling send and receive description without passing a connection object
+
+function newConnection(remotePeerId) {
+
+    // don't create connections if id is local peer id
+    if (remotePeerId === LOCAL_PEER_ID) {
+        return
+    }
+
+    // create and store connection object
+    const connection = {
+        // will be remotePeerId when receiving first answer
+        remotePeerId: remotePeerId || window.crypto.randomUUID(), 
+
+        // will be negociated once connected, each peer of the conenction should have different values 
+        receiveOnOfferConflict: Math.random() >= 0.5, 
+
+        sendDataChannels: new Map(),
+        rtcpc: new RTCPeerConnection(CONNECTION_CONFIG)
+    }
+    CONNECTIONS.set(connection.remotePeerId, connection)
+
+    // create data channels
+    Object.keys(DATA_CHANNELS).forEach(label => {
+        const sendDataChannel = connection.rtcpc.createDataChannel(label)
+        connection.sendDataChannels.set(label, sendDataChannel)
+    })
+
+    // if connection is not connected for sometime it gets removed
+    const removeConnectionTimeout = setTimeout(() => {
+        removeConnection(connection)
+    }, 5 * 60 * 1000)
+
+    // when connection state changes
+    connection.rtcpc.addEventListener("connectionstatechange", (event) => {
+        addMessage(`Connection ${connection.remotePeerId} ${connection.rtcpc.connectionState}` )
+        // connected, clear removeConnectionTimeout
+        if (connection.rtcpc.connectionState === 'connected') {
+            clearTimeout(removeConnectionTimeout)
+        }
+
+        // unrecoverable states
+        if (connection.rtcpc.connectionState === 'failed' ||
+        connection.rtcpc.connectionState === 'closed') {
+
+            // remove all streams received from the connection and remove connection
+            const receivers = connection.rtcpc.getReceivers()
+            RECEIVE_STREAMS.forEach(stream => {
+                const tracks = stream.getTracks()
+                for (const track of tracks) {
+                    const trackReceiver = receivers.find(receiver => receiver.track === track)
+                    if (trackReceiver) {
+                        removeReceiveStream(stream)
+                        break
+                    }
+                }
+            })
+
+            removeConnection(connection)
+            // TOMAYBEDO
+            // check what failed
+            // try to reconnect somehow
+        }
+    })
+
+    // receive stream when remote peer calls addSendStream
+    connection.rtcpc.addEventListener('track', event => {
+        const stream = event.streams[0]
+        addReceiveStream(stream)
+        stream.addEventListener('removetrack', event => {
+            // removes received stream when remote peer calls removeSendStream
+            removeReceiveStream(stream)
+        })
+    })
+
+    // receive data channels events
+    connection.rtcpc.addEventListener('datachannel', event => {
+
+        const dataChannel = event.channel
+        const label = dataChannel.label
+        const receiveCallBacks = DATA_CHANNELS[label]
+
+        dataChannel.addEventListener('message', event => {
+            const message = JSON.parse(event.data)
+
+            // if message is not for local peer
+            if (message.to !== LOCAL_PEER_ID) {
+
+                // local peer has a connection to destination, relay message directly
+                if (CONNECTIONS.has(message.to)) {
+                    const connection = CONNECTIONS.get(message.to)
+                    sendMessage(connection, label, message)
+                
+                // flood connected peers with message if possible
+                } else if (message.floods > 0) {
+                    message.floods -= 1
+                    CONNECTIONS.forEach(connectionToRelay => {
+                        if (connectionToRelay.remotePeerId !== connection.remotePeerId) {
+                            sendMessage(connection, label, message)
+                        }
+                    })
+                }
+
+            // receive message
+            } else if (receiveCallBacks.message) {
+                receiveCallBacks.message(message, connection)
+            }
+        })
+
+        dataChannel.addEventListener('open', event => {
+            if (receiveCallBacks.open) {
+                receiveCallBacks.open(connection)
+            }
+        })
+
+        dataChannel.addEventListener('close', event => {
+            if (receiveCallBacks.close) {
+                receiveCallBacks.close(connection)
+            }
 }
 
 function removeSendStream(stream) {
@@ -411,6 +755,37 @@ async function sendDescription(connection) {
     }
     await connection.rtcpc.setLocalDescription()
     return await sendAndReturnLocalDescription(connection)
+    })
+
+    connection.rtcpc.addEventListener('icecandidate', event => {
+        sendMessage(connection, 'icecandidate', event)
+    })
+    connection.rtcpc.addEventListener('icecandidateerror', event => {
+        // TOMAYBEDO
+    })
+    connection.rtcpc.addEventListener('negotiationneeded', event => {
+        // send a description to start negotiation
+        sendDescription(connection)
+    })
+    return connection
+}
+
+function removeConnection(connection) {
+    connection.rtcpc.getSenders().forEach(sender => {
+        this.rtcpc.removeTrack(sender)
+    })
+    connection.rtcpc.close()
+    CONNECTIONS.delete(connection.remotePeerId)
+}
+
+async function sendDescription(connection) {
+    // no connection given means to send a offer from a new connection
+    if (!connection) {
+        // connection is created with temporary id, once connected the id will be remotePeerId
+        connection = newConnection()
+    }
+    await connection.rtcpc.setLocalDescription()
+    return await sendAndReturnLocalDescription(connection)
 }
 
 async function receiveDescription(message, connection) {
@@ -553,6 +928,7 @@ setConfigurationButton.addEventListener('click', async (event) => {
         addMessage('connection config updated')
     } catch (error) {
         addMessage(`Error: ${error.message}`)
+        addMessage(`Error: ${error.message}`)
     }
 })
 
@@ -565,17 +941,34 @@ sendConnectionButton.addEventListener('click', async (event) => {
     const message = await sendDescription()
     await clipboard(JSON.stringify(message))
     addMessage('message copied to clipboard, send it to your friend')
+newUserStreamButton.addEventListener('click', newUserStream)
+
+newDisplayStreamButton.addEventListener('click', newDisplayStream)
+
+sendConnectionButton.addEventListener('click', async (event) => {
+    try {
+    const message = await sendDescription()
+    await clipboard(JSON.stringify(message))
+    addMessage('message copied to clipboard, send it to your friend')
     } catch (error) {
+        addMessage(error.toString())
         addMessage(error.toString())
     }
 })
+})
 
+receiveConnectionButton.addEventListener('click', async (event) => {
 receiveConnectionButton.addEventListener('click', async (event) => {
     try {
         let message = await clipboard()
         message = JSON.parse(message)
         const firstAnswer = await receiveDescription(message)
+        let message = await clipboard()
+        message = JSON.parse(message)
+        const firstAnswer = await receiveDescription(message)
         if (firstAnswer) {
+            await clipboard(JSON.stringify(firstAnswer))
+            addMessage('message copied to clipboard, send it to your friend')
             await clipboard(JSON.stringify(firstAnswer))
             addMessage('message copied to clipboard, send it to your friend')
         }
