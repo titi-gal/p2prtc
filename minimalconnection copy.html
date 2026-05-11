@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>p2prtc</title>
+</head>
+<body>
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script>
+        
+        let config = {
+            "iceServers": [
+                {"urls": [
+                    "stun:stun.l.google.com:19302"
+                    ]
+                }
+            ] 
+        }
+
+        let Connection
+        let Description
+        let receiveOnOfferConflict
+
+        async function connectionFlow() {
+            peer1Connection = newConnection(config)
+            peer1Connection.createDataChannel("test");
+            await createOffer(peer1Connection)
+            peer1Description = peer1Connection.localDescription
+
+            peer2Connection = newConnection(config)
+            await createOrAcceptAnswer(peer2Connection, peer1Description, peer2receiveOnOfferConflict)
+            peer2Description = peer2Connection.localDescription
+
+            await createOrAcceptAnswer(peer1Connection, peer2Description, peer1receiveOnOfferConflict)
+        }
+
+        function iceGatheringComplete(connection) {
+            return new Promise((resolve) => {
+                // event to listen for the ice gathering state until its complete
+                const onIceGatheringStateChange = () => {
+                    if (connection.iceGatheringState === 'complete') {
+                        // the event removes itself once ice gathering state its complete
+                        connection.removeEventListener('icegatheringstatechange', onIceGatheringStateChange)
+                        resolve()
+                    }
+                }
+                // add event listener to connection to start listening
+                connection.addEventListener('icegatheringstatechange', onIceGatheringStateChange)
+            })
+        }
+
+        function newConnection(config) {
+            return new RTCPeerConnection(config)
+        }
+
+        async function createOffer(connection) {
+            await connection.setLocalDescription()
+            await iceGatheringComplete(connection)
+        }
+
+        async function createOrAcceptAnswer(connection, description, receiveOnOfferConflict) {
+            // if description is offer and
+            // if peer doesnt have-local-offer or should receiveOnOfferConflict
+            if (description.type === 'offer' && ( !(connection.signalingState === 'have-local-offer') || receiveOnOfferConflict) ) {
+                await connection.setRemoteDescription(description)
+                await connection.setLocalDescription()
+                await iceGatheringComplete(connection)
+            // all connection receives answers the same way
+            } else if (description.type === 'answer') {
+                await connection.setRemoteDescription(description)
+
+            }
+        }
+
+        connectionFlow()
+
+    </script>
+</body>
+</html>

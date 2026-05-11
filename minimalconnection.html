@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>p2prtc</title>
+</head>
+<body>
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+<script>
+
+    let config = {
+        "iceServers": [
+            {"urls": [
+                "stun:stun.l.google.com:19302"
+                ]
+            }
+        ]
+    }
+
+    let Peer1Connection
+    let peer2Connection
+    let offer
+    let answer
+
+    function iceGatheringComplete(connection) {
+        return new Promise((resolve) => {
+            // event to listen for the ice gathering state until its complete
+            const onIceGatheringStateChange = () => {
+                if (connection.iceGatheringState === 'complete') {
+                    // the event removes itself once ice gathering state its complete
+                    connection.removeEventListener('icegatheringstatechange', onIceGatheringStateChange)
+                    resolve()
+                }
+            }
+            // add event listener to connection to start listening
+            connection.addEventListener('icegatheringstatechange', onIceGatheringStateChange)
+        })
+    }
+
+    async function connectionFlow() {
+        // peer 1 offer side
+        Peer1Connection = new RTCPeerConnection(config)
+        // something has to be created to trigger the interactive connectivity establishment - ice candidates
+        Peer1Connection.createDataChannel("test")
+        // set local description
+        await Peer1Connection.setLocalDescription()
+        // as this is being manually sent we wait for ice gathering to complete
+        await iceGatheringComplete(Peer1Connection)
+        // this has to be sent with a signaling channel
+        offer = Peer1Connection.localDescription
+
+        //peer 2 answer side
+        peer2Connection = new RTCPeerConnection(config)
+        // to check that the description was correctly received
+        peer2Connection.ondatachannel = (e) => {
+            console.log("Data channel received");
+        };
+
+        // set offer as the remote peer description
+        await peer2Connection.setRemoteDescription(offer)
+        // set a new local description that will be the answer
+        await peer2Connection.setLocalDescription()
+        // wait for icegathering to be complete
+        await iceGatheringComplete(peer2Connection)
+        // this has to be sent with a signaling channel
+        answer = peer2Connection.localDescription
+
+        //back to peer 1 side to accept the answer
+        await Peer1Connection.setRemoteDescription(answer)
+
+        // now they are connected and peer 1 will create a data channel named "test" that peer 2 will receive
+    }
+
+    connectionFlow()
+
+</script>
+</body>
+</html>

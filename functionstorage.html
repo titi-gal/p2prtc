@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Content Addressable Storage</title>
+    <style>
+        .cas-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        }
+
+        .cas-modal-dialog {
+            background: #1e1e1e;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 24px;
+            max-width: 700px;
+            width: 90%;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .cas-modal-title {
+            color: #fff;
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+
+        .cas-modal-hash {
+            color: #888;
+            font-family: monospace;
+            font-size: 12px;
+            margin-bottom: 16px;
+            word-break: break-all;
+        }
+
+        .cas-modal-warning {
+            color: #f59e0b;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+
+        .cas-modal-code {
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 12px;
+            color: #a5f3fc;
+            font-family: monospace;
+            font-size: 13px;
+            overflow: auto;
+            max-height: 40vh;
+            flex-grow: 1;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin-bottom: 16px;
+        }
+
+        .cas-modal-buttons {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+
+        .cas-modal-btn {
+            padding: 8px 24px;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .cas-modal-btn-accept {
+            background: #22c55e;
+            color: #fff;
+        }
+
+        .cas-modal-btn-accept:hover {
+            background: #16a34a;
+        }
+
+        .cas-modal-btn-deny {
+            background: #ef4444;
+            color: #fff;
+        }
+
+        .cas-modal-btn-deny:hover {
+            background: #dc2626;
+        }
+    </style>
+</head>
+<body>
+    <script>
+    class ContentAddressableStorage {
+        constructor(dbName = 'cas-db', storeName = 'cas') {
+            this.dbName = dbName;
+            this.storeName = storeName;
+            this.db = null;
+        }
+
+        async init() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(this.dbName, 1);
+
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains(this.storeName)) {
+                        const store = db.createObjectStore(this.storeName, { keyPath: 'hash' });
+                        store.createIndex('size', 'size', { unique: false });
+                        store.createIndex('created', 'created', { unique: false });
+                    }
+                };
+
+                request.onsuccess = (event) => {
+                    this.db = event.target.result;
+                    resolve(this);
+                };
+
+                request.onerror = (event) => {
+                    reject(new Error(`Failed to open IndexedDB: ${event.target.error}`));
+                };
+            });
+        }
+
+        async _hash(data) {
+            let buffer;
+            if (typeof data === 'string') {
+                buffer = new TextEncoder().encode(data);
+            } else if (data instanceof ArrayBuffer) {
+                buffer = new Uint8Array(data);
+            } else if (ArrayBuffer.isView(data)) {
+                buffer = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            } else {
+                throw new Error('Unsupported data type');
+            }
+
+            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+            return Array.from(new Uint8Array(hashBuffer))
+                .map(b => b.toString(16).padStart(2, '0'))
+                .join('');
+        }
+
+        _getStore(mode = 'readonly') {
+            const tx = this.db.transaction(this.storeName, mode);
+            return { store: tx.objectStore(this.storeName), tx };
+        }
+
+        async put(data) {
+            const hash = await this._hash(data);
+
+            let buffer;
+            if (typeof data === 'string') {
+                buffer = new TextEncoder().encode(data).buffer;
+            } else if (data instanceof ArrayBuffer) {
+                buffer = data;
+            } else if (ArrayBuffer.isView(data)) {
+                buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+            }
+
+            return new Promise((resolve, reject) => {
+                const { store, tx } = this._getStore('readwrite');
+
+                store.get(hash).onsuccess = (event) => {
+                    if (event.target.result) {
+                        resolve(hash);
+                        return;
+                    }
+
+                    store.put({
+                        hash,
+                        data: buffer,
+                        size: buffer.byteLength,
+                        created: Date.now()
+                    });
+                };
+
+                tx.oncomplete = () => resolve(hash);
+                tx.onerror = () => reject(new Error('Failed to store object'));
+            });
+        }
+
+        async get(hash) {
+            return new Promise((resolve, reject) => {
+                const { store } = this._getStore();
+                const request = store.get(hash);
+
+                request.onsuccess = (event) => {
+                    const result = event.target.result;
+                    resolve(result ? result.data : null);
+                };
+
+                request.onerror = () => reject(new Error('Failed to retrieve object'));
+            });
+        }
+
+        async has(hash) {
+            return new Promise((resolve, reject) => {
+                const { store } = this._getStore();
+                const request = store.get(hash);
+
+                request.onsuccess = (event) => {
+                    resolve(!!event.target.result);
+                };
+
+                request.onerror = () => reject(new Error('Failed to check object existence'));
+            });
+        }
+
+        async delete(hash) {
+            return new Promise((resolve, reject) => {
+                const { store, tx } = this._getStore('readwrite');
+                const request = store.delete(hash);
+
+                request.onsuccess = () => {
+                    tx.oncomplete = () => resolve(true);
+                };
+
+                request.onerror = () => reject(new Error('Failed to delete object'));
+            });
+        }
+
+        async list() {
+            return new Promise((resolve, reject) => {
+                const { store } = this._getStore();
+                const request = store.getAll();
+
+                request.onsuccess = (event) => {
+                    const results = event.target.result;
+                    resolve(results.map(({ hash, size, created }) => ({
+                        hash,
+                        size,
+                        created
+                    })));
+                };
+
+                request.onerror = () => reject(new Error('Failed to list objects'));
+            });
+        }
+    }
+
+    class FunctionExecutor {
+        constructor(cas) {
+            this.cas = cas;
+            this.dataChannel = null;
+            this._modalResolve = null;
+        }
+
+        async init(dataChannel) {
+            this.dataChannel = dataChannel;
+            this.dataChannel.addEventListener('message', (event) => this._handleMessage(event));
+        }
+
+        _encodeString(str) {
+            return new TextEncoder().encode(str).buffer;
+        }
+
+        _decodeString(buffer) {
+            return new TextDecoder().decode(buffer);
+        }
+
+        async receive(functionString, args) {
+            const hash = await this.cas._hash(functionString);
+            const exists = await this.cas.has(hash);
+
+            let verifiedFunctionString;
+
+            if (exists) {
+                const storedBuffer = await this.cas.get(hash);
+                verifiedFunctionString = this._decodeString(storedBuffer);
+
+                if (verifiedFunctionString !== functionString) {
+                    throw new Error('Hash collision detected: received function does not match stored function');
+                }
+            } else {
+                const accepted = await this._showVerificationModal(hash, functionString);
+                if (!accepted) {
+                    throw new Error('Function execution denied by user');
+                }
+                await this.cas.put(functionString);
+                verifiedFunctionString = functionString;
+            }
+
+            return this._executeFunction(verifiedFunctionString, args);
+        }
+
+        async send(hash, args) {
+            const buffer = await this.cas.get(hash);
+            if (!buffer) {
+                throw new Error(`Function with hash ${hash} not found in storage`);
+            }
+
+            const functionString = this._decodeString(buffer);
+
+            const message = JSON.stringify({
+                type: 'function_call',
+                hash,
+                functionString,
+                args: this._serializeArgs(args)
+            });
+
+            this.dataChannel.send(message);
+        }
+
+        async _handleMessage(event) {
+            let message;
+            try {
+                message = JSON.parse(event.data);
+            } catch (e) {
+                return;
+            }
+
+            if (message.type === 'function_call') {
+                try {
+                    const result = await this.receive(message.functionString, message.args);
+                    const response = JSON.stringify({
+                        type: 'function_result',
+                        hash: message.hash,
+                        success: true,
+                        result: result,
+                        timestamp: Date.now()
+                    });
+                    this.dataChannel.send(response);
+                } catch (error) {
+                    const response = JSON.stringify({
+                        type: 'function_result',
+                        hash: message.hash,
+                        success: false,
+                        error: error.message,
+                        timestamp: Date.now()
+                    });
+                    this.dataChannel.send(response);
+                }
+            }
+        }
+
+        _executeFunction(functionString, args) {
+            try {
+                const fn = eval(functionString);
+                if (typeof fn !== 'function') {
+                    throw new Error('Evaluated code did not produce a function');
+                }
+                return fn(...args);
+            } catch (error) {
+                throw new Error(`Execution error: ${error.message}`);
+            }
+        }
+
+        _showVerificationModal(hash, functionString) {
+            return new Promise((resolve) => {
+                const overlay = document.createElement('div');
+                overlay.className = 'cas-modal-overlay';
+
+                const dialog = document.createElement('div');
+                dialog.className = 'cas-modal-dialog';
+
+                dialog.innerHTML = `
+                    <div class="cas-modal-title">Unknown Function Received</div>
+                    <div class="cas-modal-hash">SHA-256: ${hash}</div>
+                    <div class="cas-modal-warning">This function is not in your trusted store. Review the code before accepting.</div>
+                    <div class="cas-modal-code">${this._escapeHtml(functionString)}</div>
+                    <div class="cas-modal-buttons">
+                        <button class="cas-modal-btn cas-modal-btn-deny">Deny</button>
+                        <button class="cas-modal-btn cas-modal-btn-accept">Accept</button>
+                    </div>
+                `;
+
+                overlay.appendChild(dialog);
+                document.body.appendChild(overlay);
+
+                const acceptBtn = dialog.querySelector('.cas-modal-btn-accept');
+                const denyBtn = dialog.querySelector('.cas-modal-btn-deny');
+
+                acceptBtn.addEventListener('click', () => {
+                    document.body.removeChild(overlay);
+                    resolve(true);
+                });
+
+                denyBtn.addEventListener('click', () => {
+                    document.body.removeChild(overlay);
+                    resolve(false);
+                });
+            });
+        }
+
+        _escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        _serializeArgs(args) {
+            return args.map(arg => {
+                if (arg instanceof ArrayBuffer) {
+                    return {
+                        __type__: 'ArrayBuffer',
+                        data: Array.from(new Uint8Array(arg))
+                    };
+                }
+                return arg;
+            });
+        }
+    }
+    </script>
+</body>
+</html>
