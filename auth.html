@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <script>
+        async function generateIdentity() {
+            return crypto.subtle.generateKey(
+                {
+                name: "Ed25519",
+                },
+                true,
+                ["sign", "verify"]
+            )
+        }
+
+        async function generateChallenge() {
+            const nonce = new Uint8Array(32);
+            crypto.getRandomValues(nonce);
+            return nonce;
+        }
+
+        async function signChallenge(localPeerPrivateKey, challenge) {
+            const signature = await crypto.subtle.sign(
+                "Ed25519",
+                localPeerPrivateKey,
+                challenge
+            );
+
+            return new Uint8Array(signature);
+        }
+
+        async function verifySignature(remotePeerPublicKey, challenge, signature) {
+            return crypto.subtle.verify(
+                "Ed25519",
+                remotePeerPublicKey,
+                signature,
+                challenge
+            );
+        }
+        
+        async function newPeer() {
+            return {
+                id: await generateIdentity(),
+            }
+        }
+    </script>
+</body>
+</html>
