@@ -1,0 +1,12 @@
+{
+    "name": "p2prtcBiont",
+    "start_url": "/",
+    "display": "standalone",
+    "icons": [
+        {
+            "src": "icon.svg",
+            "type": "image/svg+xml",
+            "sizes": "512x512"
+        }
+    ]
+}
